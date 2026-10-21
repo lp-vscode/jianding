@@ -1,0 +1,9 @@
+node_modules
+dist
+src-tauri/target
+.playwright-cli
+.impeccable
+output/playwright
+.DS_Store
+work
+*.log
