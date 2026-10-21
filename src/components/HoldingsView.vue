@@ -24,9 +24,10 @@ const rows = computed(() => {
     const quote = quoteFor(holding.symbol);
     const price = quote?.price ?? holding.cost;
     const value = price * holding.shares;
-    const cost = holding.cost * holding.shares;
-    const pnl = value - cost;
-    const pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
+    const averageCost = holding.cost;
+    const totalCost = averageCost * holding.shares;
+    const pnl = value - totalCost;
+    const pnlPct = totalCost > 0 ? (pnl / totalCost) * 100 : 0;
     const dayPnl = quote?.change != null ? quote.change * holding.shares : null;
     return {
       ...holding,
@@ -34,7 +35,8 @@ const rows = computed(() => {
       quote,
       price,
       value,
-      cost,
+      averageCost,
+      totalCost,
       pnl,
       pnlPct,
       dayPnl,
@@ -47,7 +49,7 @@ const rows = computed(() => {
 
 const totals = computed(() => {
   const value = rows.value.reduce((sum, row) => sum + row.value, 0);
-  const cost = rows.value.reduce((sum, row) => sum + row.cost, 0);
+  const cost = rows.value.reduce((sum, row) => sum + row.totalCost, 0);
   const pnl = value - cost;
   const pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
   const dayPnl = rows.value.reduce((sum, row) => sum + (row.dayPnl ?? 0), 0);
@@ -205,7 +207,7 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
             <small>{{ row.asset.kind === "fund" ? "份" : "股" }}</small>
           </span>
           <span class="holding-cell align-right">
-            {{ formatPrice(row.cost, row.digits) }}
+            {{ formatPrice(row.averageCost, row.digits) }}
             <small>成本</small>
           </span>
           <span class="holding-cell align-right" :class="toneOf(row.quote?.changePct)">
@@ -244,6 +246,30 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
             >
               <Trash2 :size="13" />
             </button>
+          </div>
+          <div class="holding-mobile-summary">
+            <div class="mobile-value-block">
+              <span>持仓金额</span>
+              <strong>¥{{ formatMoney(row.value) }}</strong>
+            </div>
+            <div class="mobile-pnl-block">
+              <span>浮动盈亏</span>
+              <strong :class="toneOf(row.pnl)">
+                {{ formatSigned(row.pnl) }}
+                <small>{{ formatPercent(row.pnlPct) }}</small>
+              </strong>
+              <em v-if="row.dayPnl != null" :class="toneOf(row.dayPnl)">
+                今日 {{ formatSigned(row.dayPnl) }}
+              </em>
+            </div>
+            <div class="mobile-holding-meta">
+              <span>
+                {{ row.shares.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) }}
+                {{ row.asset.kind === "fund" ? "份" : "股" }}
+              </span>
+              <span>成本 {{ formatPrice(row.averageCost, row.digits) }}</span>
+              <span>占比 {{ row.weight.toFixed(1) }}%</span>
+            </div>
           </div>
         </div>
       </div>
