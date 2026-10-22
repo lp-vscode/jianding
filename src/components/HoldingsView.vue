@@ -14,6 +14,7 @@ import {
   formatPercent,
   formatPrice,
   formatSigned,
+  directionMark,
   priceDigits,
   toneOf,
 } from "../lib/format";
@@ -127,14 +128,20 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
             <span>今日盈亏</span>
             <strong :class="toneOf(totals.dayPnl)">
               {{ formatSigned(totals.dayPnl) }}
-              <template v-if="rows.length">（{{ formatPercent(totals.dayPct) }}）</template>
+              <template v-if="rows.length">
+                （{{ formatPercent(totals.dayPct) }}
+                <i class="trend-mark" aria-hidden="true">{{ directionMark(totals.dayPct) }}</i>）
+              </template>
             </strong>
           </div>
           <div class="hero-delta">
             <span>累计盈亏</span>
             <strong :class="toneOf(totals.pnl)">
               {{ formatSigned(totals.pnl) }}
-              <template v-if="rows.length">（{{ formatPercent(totals.pnlPct) }}）</template>
+              <template v-if="rows.length">
+                （{{ formatPercent(totals.pnlPct) }}
+                <i class="trend-mark" aria-hidden="true">{{ directionMark(totals.pnlPct) }}</i>）
+              </template>
             </strong>
           </div>
           <div class="hero-delta">
@@ -212,7 +219,10 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
           </span>
           <span class="holding-cell align-right" :class="toneOf(row.quote?.changePct)">
             {{ formatPrice(row.price, row.digits) }}
-            <small>{{ formatPercent(row.quote?.changePct) }}</small>
+            <small>
+              {{ formatPercent(row.quote?.changePct) }}
+              <i class="trend-mark" aria-hidden="true">{{ directionMark(row.quote?.changePct) }}</i>
+            </small>
           </span>
           <span class="holding-cell align-right">
             ¥{{ formatMoney(row.value) }}
@@ -220,7 +230,10 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
           </span>
           <span class="holding-cell align-right" :class="toneOf(row.pnl)">
             {{ formatSigned(row.pnl) }}
-            <small>{{ formatPercent(row.pnlPct) }}</small>
+            <small>
+              {{ formatPercent(row.pnlPct) }}
+              <i class="trend-mark" aria-hidden="true">{{ directionMark(row.pnlPct) }}</i>
+            </small>
           </span>
           <div class="weight-cell">
             <span class="weight-track"><i :style="{ width: `${Math.max(4, row.weight)}%` }" /></span>
@@ -256,7 +269,10 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
               <span>浮动盈亏</span>
               <strong :class="toneOf(row.pnl)">
                 {{ formatSigned(row.pnl) }}
-                <small>{{ formatPercent(row.pnlPct) }}</small>
+                <small>
+                  {{ formatPercent(row.pnlPct) }}
+                  <i class="trend-mark" aria-hidden="true">{{ directionMark(row.pnlPct) }}</i>
+                </small>
               </strong>
               <em v-if="row.dayPnl != null" :class="toneOf(row.dayPnl)">
                 今日 {{ formatSigned(row.dayPnl) }}

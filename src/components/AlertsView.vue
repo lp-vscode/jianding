@@ -11,7 +11,7 @@ import {
   state,
   updateAlert,
 } from "../lib/store";
-import { alertConditionText, alertThresholdText, isTriggered } from "../lib/alerts";
+import { alertConditions, alertRuleSummary, isTriggered } from "../lib/alerts";
 import { timeAgo } from "../lib/format";
 
 const pendingDelete = ref<string | null>(null);
@@ -39,17 +39,25 @@ function distance(rule: AlertRule) {
   const quote = quoteFor(rule.symbol);
   if (!quote) return { text: "等待行情", tone: "flat" as const };
   if (isTriggered(rule, quote)) return { text: "已触发", tone: "up" as const };
-  if (rule.type.startsWith("pct")) {
+  const rules = alertConditions(rule);
+  if (rules.length > 1) return { text: `${rules.length} 项条件`, tone: "flat" as const };
+  const condition = rules[0];
+  if (condition.type.startsWith("pct")) {
     const pct = quote.changePct ?? 0;
     const delta =
-      rule.type === "pctAbove" ? rule.threshold - pct : pct + Math.abs(rule.threshold);
+      condition.type === "pctAbove" ? condition.threshold - pct : pct + Math.abs(condition.threshold);
     return { text: `还差 ${Math.max(0, delta).toFixed(2)} 个点`, tone: "flat" as const };
+  }
+  if (condition.type === "amountAbove") {
+    if (quote.amount == null) return { text: "等待成交额", tone: "flat" as const };
+    const delta = Math.max(0, condition.threshold - quote.amount / 100_000_000);
+    return { text: `还差 ${delta.toFixed(2)} 亿`, tone: "flat" as const };
   }
   if (quote.price == null || quote.price <= 0) return { text: "--", tone: "flat" as const };
   const delta =
-    rule.type === "priceAbove"
-      ? ((rule.threshold - quote.price) / quote.price) * 100
-      : ((quote.price - rule.threshold) / quote.price) * 100;
+    condition.type === "priceAbove"
+      ? ((condition.threshold - quote.price) / quote.price) * 100
+      : ((quote.price - condition.threshold) / quote.price) * 100;
   return { text: `还差 ${Math.abs(delta).toFixed(2)}%`, tone: "flat" as const };
 }
 
@@ -126,7 +134,7 @@ function openEvent(symbol: string) {
         <div class="panel-head">
           <div>
             <h2>提醒规则</h2>
-            <p>价格涨破、跌破，或涨跌幅达到条件时触发</p>
+            <p>价格、涨跌幅与成交额可组合触发</p>
           </div>
           <button class="btn btn-small btn-ghost" type="button" @click="openAlertDialog()">
             <Plus :size="12" />
@@ -137,7 +145,7 @@ function openEvent(symbol: string) {
         <div v-if="!state.alerts.length" class="empty rule-empty">
           <BellRing :size="22" :stroke-width="1.5" />
           <strong>还没有提醒规则</strong>
-          <p>给自选标的设置一个目标价或涨跌幅，达到条件时会记录并推送系统通知。</p>
+          <p>可选择提醒模板或组合多个条件，达到条件时记录并推送系统通知。</p>
           <button class="btn btn-gold" type="button" @click="openAlertDialog()">设置第一条</button>
         </div>
 
@@ -153,12 +161,20 @@ function openEvent(symbol: string) {
               </div>
             </div>
             <div class="rule-condition">
-              <span>{{ alertConditionText(rule, "").trim() }}</span>
-              <strong>{{ alertThresholdText(rule) }}</strong>
+              <span>
+                {{
+                  alertConditions(rule).length > 1
+                    ? rule.logic === "any"
+                      ? "满足任一条件"
+                      : "需同时满足"
+                    : "单条件提醒"
+                }}
+              </span>
+              <strong>{{ alertRuleSummary(rule) }}</strong>
             </div>
             <div class="rule-distance">
               <strong :class="distance(rule).tone">{{ distance(rule).text }}</strong>
-              <small>{{ rule.enabled ? "距现价" : "已暂停" }}</small>
+              <small>{{ rule.enabled ? "距触发" : "已暂停" }}</small>
             </div>
             <div class="rule-tools">
               <button

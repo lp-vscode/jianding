@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from "vue";
+import { onBeforeUnmount, onMounted, watchEffect } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import AppSidebar from "./components/AppSidebar.vue";
 import CompactView from "./components/CompactView.vue";
@@ -32,6 +32,11 @@ const views = {
 };
 
 const compactMode = isTauri() && getCurrentWindow().label === "compact";
+
+watchEffect(() => {
+  document.documentElement.dataset.gainLossMode = state.settings.gainLossMode;
+  document.documentElement.dataset.watchDensity = state.settings.watchlistDensity;
+});
 
 function onKeydown(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {

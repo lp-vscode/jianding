@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from "vue";
 import { BellRing, Copy, Database, Keyboard, RotateCcw, ShieldCheck, Trash2 } from "lucide-vue-next";
-import type { ViewKey } from "../types";
+import type { GainLossMode, ViewKey, WatchlistDensity } from "../types";
 import {
   copyBackup,
   dataMode,
@@ -19,6 +19,16 @@ const viewOptions: { key: ViewKey; label: string }[] = [
   { key: "holdings", label: "我的持仓" },
   { key: "alerts", label: "价格提醒" },
   { key: "settings", label: "偏好设置" },
+];
+
+const gainLossOptions: { key: GainLossMode; label: string }[] = [
+  { key: "china", label: "红涨绿跌" },
+  { key: "accessible", label: "蓝涨橙跌" },
+];
+
+const densityOptions: { key: WatchlistDensity; label: string }[] = [
+  { key: "comfortable", label: "舒适" },
+  { key: "compact", label: "紧凑" },
 ];
 
 const restoreText = ref("");
@@ -48,6 +58,14 @@ function onStartViewChange(event: Event) {
   if (viewOptions.some((item) => item.key === value)) {
     updateSettings({ startView: value });
   }
+}
+
+function setGainLossMode(mode: GainLossMode) {
+  updateSettings({ gainLossMode: mode });
+}
+
+function setWatchlistDensity(density: WatchlistDensity) {
+  updateSettings({ watchlistDensity: density });
 }
 
 async function toggleNotifications() {
@@ -135,6 +153,44 @@ onBeforeUnmount(() => window.clearTimeout(resetTimer));
                   {{ item.label }}
                 </option>
               </select>
+            </div>
+          </div>
+
+          <div class="setting-row setting-row-choice">
+            <div class="setting-copy">
+              <strong>涨跌颜色</strong>
+              <small>颜色之外始终保留 ▲▼ 方向标记，色觉差异下仍可判断</small>
+            </div>
+            <div class="setting-choice" role="group" aria-label="涨跌颜色">
+              <button
+                v-for="option in gainLossOptions"
+                :key="option.key"
+                type="button"
+                :class="{ active: state.settings.gainLossMode === option.key }"
+                :aria-pressed="state.settings.gainLossMode === option.key"
+                @click="setGainLossMode(option.key)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+          </div>
+
+          <div class="setting-row setting-row-choice">
+            <div class="setting-copy">
+              <strong>自选密度</strong>
+              <small>紧凑模式会缩短行高，适合同时观察更多标的</small>
+            </div>
+            <div class="setting-choice" role="group" aria-label="自选密度">
+              <button
+                v-for="option in densityOptions"
+                :key="option.key"
+                type="button"
+                :class="{ active: state.settings.watchlistDensity === option.key }"
+                :aria-pressed="state.settings.watchlistDensity === option.key"
+                @click="setWatchlistDensity(option.key)"
+              >
+                {{ option.label }}
+              </button>
             </div>
           </div>
 
@@ -244,6 +300,18 @@ onBeforeUnmount(() => window.clearTimeout(resetTimer));
           <div class="shortcut-row">
             <span><Keyboard :size="11" /> 搜索标的</span>
             <kbd>⌘ K</kbd>
+          </div>
+          <div class="shortcut-row">
+            <span><Keyboard :size="11" /> 切换自选</span>
+            <kbd>↑ / ↓</kbd>
+          </div>
+          <div class="shortcut-row">
+            <span><BellRing :size="11" /> 快速提醒</span>
+            <kbd>R</kbd>
+          </div>
+          <div class="shortcut-row">
+            <span><Keyboard :size="11" /> 分组与更多</span>
+            <kbd>G</kbd>
           </div>
           <div class="shortcut-row">
             <span><BellRing :size="11" /> 关闭弹窗</span>

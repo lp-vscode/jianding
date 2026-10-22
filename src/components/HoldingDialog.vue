@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { AlertCircle, Check, Info, Search, X } from "lucide-vue-next";
 import type { Asset, SearchResult } from "../types";
 import {
@@ -17,6 +17,7 @@ import {
   formatPercent,
   formatPrice,
   formatSigned,
+  directionMark,
   priceDigits,
   toneOf,
 } from "../lib/format";
@@ -26,6 +27,7 @@ const editing = Boolean(initial);
 
 const symbol = ref(initial?.symbol ?? state.selectedSymbol ?? state.watchlist[0] ?? "");
 const sharesInput = ref(initial ? String(initial.shares) : "");
+const sharesEl = ref<HTMLInputElement | null>(null);
 const costInput = ref(
   initial ? String(initial.cost) : String(quoteFor(symbol.value)?.price ?? ""),
 );
@@ -111,14 +113,21 @@ onBeforeUnmount(() => {
   window.clearTimeout(pickerTimer);
   pickerToken += 1;
 });
+onMounted(() => sharesEl.value?.focus());
 </script>
 
 <template>
   <div class="modal-backdrop" @mousedown.self="closeHoldingDialog">
-    <form class="modal" @submit.prevent="submit">
+    <form
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="holding-dialog-title"
+      @submit.prevent="submit"
+    >
       <div class="modal-head">
         <div>
-          <h2>{{ editing ? "编辑持仓" : "添加持仓" }}</h2>
+          <h2 id="holding-dialog-title">{{ editing ? "编辑持仓" : "添加持仓" }}</h2>
           <p>{{ editing ? "更新份额与成本后，盈亏会立即重算" : "记录份额与成本，市值随行情自动更新" }}</p>
         </div>
         <button class="icon-btn" type="button" aria-label="关闭" @click="closeHoldingDialog">
@@ -137,7 +146,10 @@ onBeforeUnmount(() => {
           </span>
           <span v-if="quote" class="dialog-symbol-price">
             <strong :class="toneOf(quote.changePct)">{{ formatPrice(quote.price, digits) }}</strong>
-            <small :class="toneOf(quote.changePct)">{{ formatPercent(quote.changePct) }}</small>
+            <small :class="toneOf(quote.changePct)">
+              {{ formatPercent(quote.changePct) }}
+              <i class="trend-mark" aria-hidden="true">{{ directionMark(quote.changePct) }}</i>
+            </small>
           </span>
         </div>
 
@@ -188,6 +200,7 @@ onBeforeUnmount(() => {
           <label class="field">
             <span>持有份额</span>
             <input
+              ref="sharesEl"
               v-model="sharesInput"
               inputmode="decimal"
               autocomplete="off"
@@ -221,7 +234,7 @@ onBeforeUnmount(() => {
 
         <p v-if="error" class="dialog-note">
           <AlertCircle :size="13" />
-          <span class="up">{{ error }}</span>
+          <span class="error-text">{{ error }}</span>
         </p>
         <p v-else class="dialog-note">
           <Info :size="13" />

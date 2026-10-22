@@ -3,6 +3,9 @@ export type Market = "sh" | "sz" | "jj";
 export type ViewKey = "watchlist" | "holdings" | "alerts" | "settings";
 export type QuoteState = "live" | "nav" | "demo";
 export type TrendRange = "intraday" | "5d" | "day" | "week" | "month" | "1m" | "3m" | "1y";
+export type GainLossMode = "china" | "accessible";
+export type WatchlistDensity = "comfortable" | "compact";
+export type WatchlistSort = "default" | "changeDesc" | "changeAsc" | "priceDesc" | "priceAsc" | "volumeDesc";
 
 export interface Asset {
   symbol: string;
@@ -59,16 +62,31 @@ export interface Holding {
   updatedAt: number;
 }
 
-export type AlertType = "priceAbove" | "priceBelow" | "pctAbove" | "pctBelow";
+export type AlertType = "priceAbove" | "priceBelow" | "pctAbove" | "pctBelow" | "amountAbove";
+export type AlertLogic = "all" | "any";
+
+export interface AlertCondition {
+  type: AlertType;
+  threshold: number;
+}
 
 export interface AlertRule {
   id: string;
   symbol: string;
   type: AlertType;
   threshold: number;
+  conditions?: AlertCondition[];
+  logic?: AlertLogic;
   enabled: boolean;
   createdAt: number;
   lastTriggeredAt: number | null;
+}
+
+export interface WatchlistGroup {
+  id: string;
+  name: string;
+  symbols: string[];
+  createdAt: number;
 }
 
 export interface AlertEvent {
@@ -86,6 +104,9 @@ export interface Settings {
   refreshSeconds: 5 | 15 | 30 | 60;
   startView: ViewKey;
   notifications: boolean;
+  gainLossMode: GainLossMode;
+  watchlistDensity: WatchlistDensity;
+  watchlistSort: WatchlistSort;
 }
 
 export interface SearchResult {

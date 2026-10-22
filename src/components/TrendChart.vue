@@ -9,8 +9,9 @@ const props = withDefaults(
     loading?: boolean;
     tone?: "up" | "down" | "flat";
     digits?: number;
+    label?: string;
   }>(),
-  { loading: false, tone: "flat", digits: 2 },
+  { loading: false, tone: "flat", digits: 2, label: "价格走势" },
 );
 
 const wrap = ref<HTMLDivElement | null>(null);
@@ -121,8 +122,8 @@ const hoverPoint = computed(() => {
 });
 
 const chartColor = computed(() => {
-  if (props.tone === "up") return "var(--up)";
-  if (props.tone === "down") return "var(--down)";
+  if (props.tone === "up") return "var(--trend-up)";
+  if (props.tone === "down") return "var(--trend-down)";
   return "var(--gold)";
 });
 
@@ -146,7 +147,7 @@ const gradientId = `trend-${Math.random().toString(36).slice(2, 8)}`;
       :width="width"
       :height="height"
       role="img"
-      aria-label="价格走势"
+      :aria-label="label"
       @mousemove="onMove"
       @mouseleave="hover = null"
     >

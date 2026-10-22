@@ -22,6 +22,11 @@ export function formatPercent(value: number | null | undefined, digits = 2) {
   return `${formatSigned(value, digits)}%`;
 }
 
+export function directionMark(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value) || value === 0) return "•";
+  return value > 0 ? "▲" : "▼";
+}
+
 export function formatCompactMoney(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "--";
   const abs = Math.abs(value);

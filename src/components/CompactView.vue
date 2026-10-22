@@ -10,7 +10,7 @@ import {
   state,
   watchlistAssets,
 } from "../lib/store";
-import { formatPercent, formatPrice, priceDigits, toneOf } from "../lib/format";
+import { directionMark, formatPercent, formatPrice, priceDigits, toneOf } from "../lib/format";
 import { marketPhase } from "../lib/market";
 
 const current = computed(() => (selectedAsset.value ? quoteFor(selectedAsset.value.symbol) : undefined));
@@ -67,6 +67,7 @@ async function openMain() {
         </strong>
         <small :class="toneOf(current?.changePct)">
           {{ formatPercent(current?.changePct) }}
+          <i class="trend-mark" aria-hidden="true">{{ directionMark(current?.changePct) }}</i>
         </small>
       </span>
     </button>
@@ -83,6 +84,7 @@ async function openMain() {
         <span>{{ asset.name }}</span>
         <strong :class="toneOf(quoteFor(asset.symbol)?.changePct)">
           {{ formatPercent(quoteFor(asset.symbol)?.changePct) }}
+          <i class="trend-mark" aria-hidden="true">{{ directionMark(quoteFor(asset.symbol)?.changePct) }}</i>
         </strong>
       </button>
     </div>

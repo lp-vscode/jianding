@@ -56,6 +56,15 @@ export function effectiveRefreshMs(seconds: number, now = new Date()) {
   return isMarketOpen(now) ? seconds * 1000 : Math.max(60_000, seconds * 4000);
 }
 
+export function dataDelayLimitMs(seconds: number, now = new Date()) {
+  return Math.max(45_000, effectiveRefreshMs(seconds, now) * 1.5);
+}
+
+export function isDataDelayed(lastUpdated: number | null, seconds: number, now = new Date()) {
+  if (!lastUpdated) return false;
+  return now.getTime() - lastUpdated > dataDelayLimitMs(seconds, now);
+}
+
 export function marketLabel(phase: MarketPhase) {
   if (phase === "交易中") return "交易中";
   if (phase === "集合竞价") return "集合竞价";

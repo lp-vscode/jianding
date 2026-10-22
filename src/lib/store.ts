@@ -1,7 +1,9 @@
 import { computed, nextTick, reactive, watch } from "vue";
 import type {
   AlertEvent,
+  AlertCondition,
   AlertRule,
+  AlertType,
   Asset,
   Holding,
   IndexQuote,
@@ -11,6 +13,7 @@ import type {
   ToastItem,
   TrendRange,
   ViewKey,
+  WatchlistGroup,
 } from "../types";
 import { fetchIndices, fetchQuotes, isTauri } from "./backend";
 import { alertEventMessage, isTriggered } from "./alerts";
@@ -24,12 +27,17 @@ const DEFAULT_SETTINGS: Settings = {
   refreshSeconds: 15,
   startView: "watchlist",
   notifications: true,
+  gainLossMode: "china",
+  watchlistDensity: "comfortable",
+  watchlistSort: "default",
 };
 
 interface PersistedState {
   version: 1;
   assets: Asset[];
   watchlist: string[];
+  watchlistGroups: WatchlistGroup[];
+  activeWatchlistGroupId: string | null;
   holdings: Holding[];
   alerts: AlertRule[];
   events: AlertEvent[];
@@ -76,11 +84,47 @@ function uid(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+const ALERT_TYPES: AlertType[] = ["priceAbove", "priceBelow", "pctAbove", "pctBelow", "amountAbove"];
+
+function sanitizeAlertCondition(raw: unknown): AlertCondition | null {
+  if (!raw || typeof raw !== "object") return null;
+  const condition = raw as Partial<AlertCondition>;
+  if (!ALERT_TYPES.includes(condition.type as AlertType)) return null;
+  const threshold = Number(condition.threshold);
+  if (!Number.isFinite(threshold) || threshold <= 0) return null;
+  return { type: condition.type as AlertType, threshold };
+}
+
+function sanitizeAlertRule(raw: unknown): AlertRule | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rule = raw as Partial<AlertRule>;
+  if (typeof rule.id !== "string" || typeof rule.symbol !== "string") return null;
+  const conditions = Array.isArray(rule.conditions)
+    ? rule.conditions.map(sanitizeAlertCondition).filter((item): item is AlertCondition => Boolean(item)).slice(0, 3)
+    : [];
+  const legacy = sanitizeAlertCondition(rule);
+  const first = conditions[0] ?? legacy;
+  if (!first) return null;
+  return {
+    id: rule.id,
+    symbol: rule.symbol,
+    type: first.type,
+    threshold: first.threshold,
+    conditions: conditions.length ? conditions : [first],
+    logic: rule.logic === "any" ? "any" : "all",
+    enabled: rule.enabled !== false,
+    createdAt: typeof rule.createdAt === "number" ? rule.createdAt : Date.now(),
+    lastTriggeredAt: typeof rule.lastTriggeredAt === "number" ? rule.lastTriggeredAt : null,
+  };
+}
+
 function defaultPersisted(): PersistedState {
   return {
     version: 1,
     assets: DEFAULT_ASSETS.map((asset) => ({ ...asset, addedAt: Date.now() })),
     watchlist: DEFAULT_ASSETS.map((asset) => asset.symbol),
+    watchlistGroups: [],
+    activeWatchlistGroupId: null,
     holdings: [],
     alerts: [],
     events: [],
@@ -149,6 +193,25 @@ function sanitizePersisted(raw: unknown): PersistedState | null {
       ),
   );
   const watchlist = source.watchlist.filter((symbol): symbol is string => typeof symbol === "string");
+  const watchlistGroups: WatchlistGroup[] = Array.isArray(source.watchlistGroups)
+    ? source.watchlistGroups
+        .filter(
+          (group): group is WatchlistGroup =>
+            Boolean(
+              group &&
+                typeof group.id === "string" &&
+                typeof group.name === "string" &&
+                Array.isArray(group.symbols),
+            ),
+        )
+        .map((group) => ({
+          id: group.id,
+          name: group.name.trim().slice(0, 20),
+          symbols: [...new Set(group.symbols.filter((symbol) => typeof symbol === "string" && watchlist.includes(symbol)))],
+          createdAt: typeof group.createdAt === "number" ? group.createdAt : Date.now(),
+        }))
+        .filter((group) => group.name)
+    : [];
   const settings: Settings = {
     refreshSeconds: [5, 15, 30, 60].includes(Number(source.settings?.refreshSeconds))
       ? (Number(source.settings?.refreshSeconds) as Settings["refreshSeconds"])
@@ -162,13 +225,32 @@ function sanitizePersisted(raw: unknown): PersistedState | null {
       typeof source.settings?.notifications === "boolean"
         ? source.settings.notifications
         : DEFAULT_SETTINGS.notifications,
+    gainLossMode:
+      source.settings?.gainLossMode === "accessible" || source.settings?.gainLossMode === "china"
+        ? source.settings.gainLossMode
+        : DEFAULT_SETTINGS.gainLossMode,
+    watchlistDensity:
+      source.settings?.watchlistDensity === "compact" || source.settings?.watchlistDensity === "comfortable"
+        ? source.settings.watchlistDensity
+        : DEFAULT_SETTINGS.watchlistDensity,
+    watchlistSort: (["default", "changeDesc", "changeAsc", "priceDesc", "priceAsc", "volumeDesc"] as const).includes(
+      source.settings?.watchlistSort as Settings["watchlistSort"],
+    )
+      ? (source.settings?.watchlistSort as Settings["watchlistSort"])
+      : DEFAULT_SETTINGS.watchlistSort,
   };
   return {
     version: 1,
     assets,
     watchlist,
+    watchlistGroups,
+    activeWatchlistGroupId: watchlistGroups.some((group) => group.id === source.activeWatchlistGroupId)
+      ? (source.activeWatchlistGroupId ?? null)
+      : null,
     holdings: Array.isArray(source.holdings) ? source.holdings.filter((item) => item && typeof item.symbol === "string") : [],
-    alerts: Array.isArray(source.alerts) ? source.alerts.filter((item) => item && typeof item.symbol === "string") : [],
+    alerts: Array.isArray(source.alerts)
+      ? source.alerts.map(sanitizeAlertRule).filter((item): item is AlertRule => Boolean(item))
+      : [],
     events: Array.isArray(source.events) ? source.events.slice(0, 80) : [],
     settings,
     selectedSymbol: typeof source.selectedSymbol === "string" ? source.selectedSymbol : null,
@@ -188,6 +270,8 @@ function applyPersisted(persisted: PersistedState) {
   const watchlist = persisted.watchlist.length ? persisted.watchlist : assets.map((asset) => asset.symbol);
   state.assets = assets;
   state.watchlist = watchlist;
+  state.watchlistGroups = persisted.watchlistGroups;
+  state.activeWatchlistGroupId = persisted.activeWatchlistGroupId;
   state.holdings = persisted.holdings;
   state.alerts = persisted.alerts;
   state.events = persisted.events;
@@ -211,6 +295,8 @@ function snapshot(): PersistedState {
     version: 1,
     assets: state.assets,
     watchlist: state.watchlist,
+    watchlistGroups: state.watchlistGroups,
+    activeWatchlistGroupId: state.activeWatchlistGroupId,
     holdings: state.holdings,
     alerts: state.alerts,
     events: state.events,
@@ -486,12 +572,14 @@ export function ensureAsset(result: SearchResult): Asset {
 
 export function addToWatchlist(result: SearchResult) {
   const asset = ensureAsset(result);
+  const group = state.watchlistGroups.find((item) => item.id === state.activeWatchlistGroupId);
   if (!state.watchlist.includes(asset.symbol)) {
     state.watchlist.push(asset.symbol);
-    showToast(`已把 ${asset.name} 加入自选`, "success");
+    showToast(group ? `已把 ${asset.name} 加入「${group.name}」` : `已把 ${asset.name} 加入自选`, "success");
   } else {
-    showToast(`${asset.name} 已在自选中`, "info");
+    showToast(group ? `已将 ${asset.name} 加入「${group.name}」` : `${asset.name} 已在自选中`, "info");
   }
+  if (group && !group.symbols.includes(asset.symbol)) group.symbols.push(asset.symbol);
   selectAsset(asset.symbol);
   state.searchOpen = false;
   scheduleSave();
@@ -503,11 +591,89 @@ export function removeFromWatchlist(symbol: string) {
   if (index < 0) return;
   const asset = assetForSymbol(symbol);
   state.watchlist.splice(index, 1);
+  for (const group of state.watchlistGroups) {
+    const groupIndex = group.symbols.indexOf(symbol);
+    if (groupIndex >= 0) group.symbols.splice(groupIndex, 1);
+  }
+  if (
+    state.activeWatchlistGroupId &&
+    state.watchlistGroups.find((item) => item.id === state.activeWatchlistGroupId)?.symbols.length === 0
+  ) {
+    state.activeWatchlistGroupId = null;
+  }
   if (state.selectedSymbol === symbol) {
     state.selectedSymbol = state.watchlist[Math.min(index, state.watchlist.length - 1)] ?? null;
   }
   const held = state.holdings.some((holding) => holding.symbol === symbol);
   showToast(held ? `已将 ${asset.name} 移出自选，持仓仍保留` : `已将 ${asset.name} 移出自选`, "info");
+  scheduleSave();
+}
+
+export function setActiveWatchlistGroup(id: string | null) {
+  if (id && !state.watchlistGroups.some((group) => group.id === id)) return;
+  state.activeWatchlistGroupId = id;
+  scheduleSave(0);
+}
+
+export function createWatchlistGroup(name: string) {
+  const trimmed = name.trim().slice(0, 20);
+  if (!trimmed) {
+    showToast("请输入分组名称", "error");
+    return null;
+  }
+  const duplicate = state.watchlistGroups.find((group) => group.name === trimmed);
+  if (duplicate) {
+    showToast("已经有同名分组", "info");
+    state.activeWatchlistGroupId = duplicate.id;
+    scheduleSave(0);
+    return duplicate;
+  }
+  const group: WatchlistGroup = {
+    id: uid("group"),
+    name: trimmed,
+    symbols: [],
+    createdAt: Date.now(),
+  };
+  state.watchlistGroups.push(group);
+  state.activeWatchlistGroupId = group.id;
+  scheduleSave();
+  showToast(`已创建分组「${group.name}」`, "success");
+  return group;
+}
+
+export function renameWatchlistGroup(id: string, name: string) {
+  const group = state.watchlistGroups.find((item) => item.id === id);
+  const trimmed = name.trim().slice(0, 20);
+  if (!group || !trimmed) return false;
+  if (state.watchlistGroups.some((item) => item.id !== id && item.name === trimmed)) {
+    showToast("已经有同名分组", "info");
+    return false;
+  }
+  group.name = trimmed;
+  scheduleSave();
+  return true;
+}
+
+export function deleteWatchlistGroup(id: string) {
+  const index = state.watchlistGroups.findIndex((group) => group.id === id);
+  if (index < 0) return;
+  const [removed] = state.watchlistGroups.splice(index, 1);
+  if (state.activeWatchlistGroupId === id) state.activeWatchlistGroupId = null;
+  showToast(`已删除分组「${removed.name}」，自选标的仍保留`, "info");
+  scheduleSave();
+}
+
+export function toggleWatchlistGroupSymbol(groupId: string, symbol: string) {
+  const group = state.watchlistGroups.find((item) => item.id === groupId);
+  if (!group || !state.watchlist.includes(symbol)) return;
+  const index = group.symbols.indexOf(symbol);
+  if (index >= 0) {
+    group.symbols.splice(index, 1);
+    showToast(`已从「${group.name}」移除`, "info");
+  } else {
+    group.symbols.push(symbol);
+    showToast(`已加入「${group.name}」`, "success");
+  }
   scheduleSave();
 }
 
@@ -698,7 +864,17 @@ export function resetAllData() {
 }
 
 watch(
-  () => [state.assets, state.watchlist, state.holdings, state.alerts, state.events, state.settings, state.selectedSymbol],
+  () => [
+    state.assets,
+    state.watchlist,
+    state.watchlistGroups,
+    state.activeWatchlistGroupId,
+    state.holdings,
+    state.alerts,
+    state.events,
+    state.settings,
+    state.selectedSymbol,
+  ],
   () => scheduleSave(),
   { deep: true },
 );
