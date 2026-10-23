@@ -78,3 +78,13 @@ export async function fetchIndices(): Promise<IndexQuote[]> {
     return demoIndices();
   }
 }
+
+export async function loadTradingLedgerDisk() {
+  if (!isTauri()) return null;
+  return invoke<string | null>("load_trading_ledger");
+}
+
+export async function saveTradingLedgerDisk(contents: string) {
+  if (!isTauri()) return;
+  await invoke("save_trading_ledger", { contents });
+}

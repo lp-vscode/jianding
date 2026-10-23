@@ -17,6 +17,7 @@ import { formatTime } from "../lib/format";
 const viewOptions: { key: ViewKey; label: string }[] = [
   { key: "watchlist", label: "自选观察" },
   { key: "holdings", label: "我的持仓" },
+  { key: "trading", label: "量化交易" },
   { key: "alerts", label: "价格提醒" },
   { key: "settings", label: "偏好设置" },
 ];

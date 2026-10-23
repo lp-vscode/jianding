@@ -6,6 +6,7 @@ import CompactView from "./components/CompactView.vue";
 import MarketTicker from "./components/MarketTicker.vue";
 import WatchlistView from "./components/WatchlistView.vue";
 import HoldingsView from "./components/HoldingsView.vue";
+import TradingView from "./components/TradingView.vue";
 import AlertsView from "./components/AlertsView.vue";
 import SettingsView from "./components/SettingsView.vue";
 import SearchDialog from "./components/SearchDialog.vue";
@@ -16,6 +17,7 @@ import {
   closeAlertDialog,
   closeHoldingDialog,
   hydrate,
+  hydrateTradingLedger,
   refreshAll,
   startPolling,
   startWindowSync,
@@ -27,6 +29,7 @@ import { isTauri } from "./lib/backend";
 const views = {
   watchlist: WatchlistView,
   holdings: HoldingsView,
+  trading: TradingView,
   alerts: AlertsView,
   settings: SettingsView,
 };
@@ -54,8 +57,11 @@ function onKeydown(event: KeyboardEvent) {
 onMounted(() => {
   hydrate();
   void startWindowSync();
-  void refreshAll();
-  startPolling();
+  if (!compactMode) {
+    void hydrateTradingLedger();
+    void refreshAll();
+    startPolling();
+  }
   window.addEventListener("keydown", onKeydown);
 });
 

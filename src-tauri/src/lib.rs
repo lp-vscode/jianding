@@ -1,10 +1,70 @@
 mod market_data;
 
 use market_data::{fetch_indices, fetch_quotes, fetch_trend, search_assets};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use tauri::{
     AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
     WindowEvent,
 };
+
+fn trading_ledger_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("trading-ledger.json"))
+        .map_err(|error| format!("无法定位交易账本目录: {error}"))
+}
+
+#[tauri::command]
+fn load_trading_ledger(app: AppHandle) -> Result<Option<String>, String> {
+    let target = trading_ledger_path(&app)?;
+    if !target.exists() {
+        return Ok(None);
+    }
+    match fs::read_to_string(&target) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) => {
+            let backup = target.with_extension("json.bak");
+            if backup.exists() {
+                fs::read_to_string(&backup)
+                    .map(Some)
+                    .map_err(|backup_error| {
+                        format!("读取交易账本失败: {error}; 备份读取失败: {backup_error}")
+                    })
+            } else {
+                Err(format!("读取交易账本失败: {error}"))
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn save_trading_ledger(app: AppHandle, contents: String) -> Result<(), String> {
+    if contents.len() > 8 * 1024 * 1024 {
+        return Err("交易账本超过 8 MiB，已拒绝写入".to_string());
+    }
+    let target = trading_ledger_path(&app)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| "交易账本路径缺少父目录".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| format!("创建交易账本目录失败: {error}"))?;
+    if target.exists() {
+        let backup = target.with_extension("json.bak");
+        fs::copy(&target, &backup).map_err(|error| format!("备份交易账本失败: {error}"))?;
+    }
+    write_trading_ledger(&target, &contents)
+}
+
+fn write_trading_ledger(target: &Path, contents: &str) -> Result<(), String> {
+    let temporary = target.with_extension("json.tmp");
+    fs::write(&temporary, contents).map_err(|error| format!("写入临时交易账本失败: {error}"))?;
+    if target.exists() {
+        fs::remove_file(target).map_err(|error| format!("替换交易账本失败: {error}"))?;
+    }
+    fs::rename(&temporary, target).map_err(|error| format!("提交交易账本失败: {error}"))
+}
 
 fn place_compact_window(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     let main_monitor = app
@@ -99,6 +159,8 @@ pub fn run() {
             search_assets,
             fetch_trend,
             fetch_indices,
+            load_trading_ledger,
+            save_trading_ledger,
             show_compact_window,
             hide_compact_window,
             focus_main_window

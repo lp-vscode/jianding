@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from "vue";
-import { Bell, PanelTop, Plus, Search, Settings, Star, Wallet } from "lucide-vue-next";
+import { BarChart3, Bell, PanelTop, Plus, Search, Settings, Star, Wallet } from "lucide-vue-next";
 import { invoke } from "@tauri-apps/api/core";
 import type { ViewKey } from "../types";
 import { dataMode, setView, showToast, state, unreadAlertCount, watchlistAssets } from "../lib/store";
@@ -10,6 +10,7 @@ import { isTauri } from "../lib/backend";
 const navItems: { key: ViewKey; label: string; icon: typeof Star }[] = [
   { key: "watchlist", label: "自选观察", icon: Star },
   { key: "holdings", label: "我的持仓", icon: Wallet },
+  { key: "trading", label: "量化交易", icon: BarChart3 },
   { key: "alerts", label: "价格提醒", icon: Bell },
   { key: "settings", label: "偏好设置", icon: Settings },
 ];

@@ -11,14 +11,43 @@ import type {
   SearchResult,
   Settings,
   ToastItem,
+  TradingLedger,
+  TradingOrderType,
+  TradingRiskConfig,
+  TradingSide,
+  TradingStrategy,
   TrendRange,
   ViewKey,
   WatchlistGroup,
 } from "../types";
-import { fetchIndices, fetchQuotes, isTauri } from "./backend";
+import {
+  fetchIndices,
+  fetchQuotes,
+  fetchTrend,
+  isTauri,
+  loadTradingLedgerDisk,
+  saveTradingLedgerDisk,
+} from "./backend";
 import { alertEventMessage, isTriggered } from "./alerts";
 import { DEFAULT_ASSETS, demoAsset } from "./demo";
 import { effectiveRefreshMs } from "./market";
+import {
+  cancelTradingOrder,
+  calculateTradingStats,
+  createTradingSignal,
+  defaultTradingLedger,
+  evaluateTradingAgent,
+  evaluateSmaCross,
+  matchPendingTradingOrders,
+  recordEquityPoint,
+  recordStrategyEvaluation,
+  riskExitForPosition,
+  runSmaBacktest,
+  resetTradingLedger as resetLedger,
+  sanitizeTradingLedger,
+  submitTradingOrder,
+  suggestedTradingQuantity,
+} from "./trading";
 
 const STORAGE_KEY = "jianding:state:v1";
 const ALERT_COOLDOWN = 30 * 60 * 1000;
@@ -43,6 +72,7 @@ interface PersistedState {
   events: AlertEvent[];
   settings: Settings;
   selectedSymbol: string | null;
+  trading: TradingLedger;
 }
 
 interface AppState extends PersistedState {
@@ -130,6 +160,7 @@ function defaultPersisted(): PersistedState {
     events: [],
     settings: { ...DEFAULT_SETTINGS },
     selectedSymbol: DEFAULT_ASSETS[0]?.symbol ?? null,
+    trading: defaultTradingLedger(Date.now(), DEFAULT_ASSETS[0]?.symbol ?? ""),
   };
 }
 
@@ -216,7 +247,7 @@ function sanitizePersisted(raw: unknown): PersistedState | null {
     refreshSeconds: [5, 15, 30, 60].includes(Number(source.settings?.refreshSeconds))
       ? (Number(source.settings?.refreshSeconds) as Settings["refreshSeconds"])
       : DEFAULT_SETTINGS.refreshSeconds,
-    startView: (["watchlist", "holdings", "alerts", "settings"] as ViewKey[]).includes(
+    startView: (["watchlist", "holdings", "trading", "alerts", "settings"] as ViewKey[]).includes(
       source.settings?.startView as ViewKey,
     )
       ? (source.settings?.startView as ViewKey)
@@ -254,6 +285,7 @@ function sanitizePersisted(raw: unknown): PersistedState | null {
     events: Array.isArray(source.events) ? source.events.slice(0, 80) : [],
     settings,
     selectedSymbol: typeof source.selectedSymbol === "string" ? source.selectedSymbol : null,
+    trading: sanitizeTradingLedger(source.trading, watchlist[0] ?? ""),
   };
 }
 
@@ -276,6 +308,7 @@ function applyPersisted(persisted: PersistedState) {
   state.alerts = persisted.alerts;
   state.events = persisted.events;
   state.settings = persisted.settings;
+  state.trading = persisted.trading;
   state.selectedSymbol =
     persisted.selectedSymbol && watchlist.includes(persisted.selectedSymbol)
       ? persisted.selectedSymbol
@@ -302,6 +335,7 @@ function snapshot(): PersistedState {
     events: state.events,
     settings: state.settings,
     selectedSymbol: state.selectedSymbol,
+    trading: state.trading,
   };
 }
 
@@ -340,6 +374,41 @@ export function hydrate() {
   }
   state.view = state.settings.startView;
   state.ready = true;
+}
+
+let tradingDiskTimer: number | undefined;
+
+export async function persistTradingNow() {
+  if (!isTauri()) return;
+  try {
+    await saveTradingLedgerDisk(JSON.stringify(state.trading, null, 2));
+  } catch (error) {
+    console.warn("写入交易账本失败", error);
+  }
+}
+
+function scheduleTradingDiskSave() {
+  if (!state.ready || !isTauri()) return;
+  window.clearTimeout(tradingDiskTimer);
+  tradingDiskTimer = window.setTimeout(() => {
+    void persistTradingNow();
+  }, 300);
+}
+
+export async function hydrateTradingLedger() {
+  if (!isTauri()) return;
+  try {
+    const raw = await loadTradingLedgerDisk();
+    if (!raw) return;
+    const restored = sanitizeTradingLedger(JSON.parse(raw), state.watchlist[0] ?? "");
+    if (restored.updatedAt > state.trading.updatedAt) {
+      state.trading = restored;
+      persistNow();
+      showToast("已恢复本地交易账本", "info");
+    }
+  } catch (error) {
+    console.warn("读取交易账本失败", error);
+  }
 }
 
 function nextStateRevision() {
@@ -493,6 +562,249 @@ export function dismissToast(id: number) {
   if (index >= 0) state.toasts.splice(index, 1);
 }
 
+function processTradingMarket(forceEquity = false) {
+  if (isTauri() && currentWindowLabel !== "" && currentWindowLabel !== "main") return;
+  for (const position of [...state.trading.positions]) {
+    const quote = quoteFor(position.symbol);
+    const exit = riskExitForPosition(position, quote, state.trading.risk);
+    if (!exit || !quote) continue;
+    const asset = assetForSymbol(position.symbol);
+    const result = submitTradingOrder(
+      state.trading,
+      {
+        symbol: position.symbol,
+        side: "sell",
+        type: "market",
+        quantity: position.quantity,
+        reason: `${exit.reason} ${exit.pnlPct.toFixed(2)}%`,
+      },
+      asset,
+      quote,
+    );
+    state.trading.agentDecisions.unshift({
+      id: uid("agent"),
+      at: Date.now(),
+      symbol: position.symbol,
+      action: "execute",
+      confidence: 100,
+      reason: `${exit.reason}，自动平仓`,
+      signalId: null,
+      riskFlags: [exit.reason],
+    });
+    state.trading.agentDecisions = state.trading.agentDecisions.slice(0, 200);
+    if (result.fill) showToast(`${asset.name} ${exit.reason}，已模拟平仓`, "info");
+  }
+  const fills = matchPendingTradingOrders(state.trading, state.quotes, assetForSymbol);
+  for (const fill of fills) {
+    const asset = assetForSymbol(fill.symbol);
+    showToast(
+      `${asset.name} ${fill.side === "buy" ? "买入" : "卖出"} ${fill.quantity} @ ${fill.price.toFixed(3)}`,
+      "success",
+    );
+  }
+  const recorded = recordEquityPoint(state.trading, state.quotes, Date.now(), forceEquity || fills.length > 0);
+  if (fills.length || recorded) scheduleSave();
+}
+
+let tradingEvaluationPromise: Promise<unknown> | null = null;
+
+export async function evaluateTradingStrategy(manual = false) {
+  if (isTauri() && currentWindowLabel !== "" && currentWindowLabel !== "main") return null;
+  if (tradingEvaluationPromise && !manual) return tradingEvaluationPromise;
+  tradingEvaluationPromise = (async () => {
+    const strategy = state.trading.strategy;
+    const symbol = strategy.symbol || state.selectedSymbol || state.watchlist[0] || "";
+    const asset = symbol ? assetForSymbol(symbol) : null;
+    const quote = symbol ? quoteFor(symbol) : undefined;
+    if (!asset || !quote?.price) {
+      strategy.lastReason = "当前没有可用行情，无法计算信号";
+      strategy.lastAction = "hold";
+      strategy.lastEvaluatedAt = Date.now();
+      scheduleSave();
+      if (manual) showToast(strategy.lastReason, "error");
+      return null;
+    }
+    strategy.symbol = symbol;
+    const points = await fetchTrend(asset, "1y");
+    const previousCross = strategy.lastCross;
+    const evaluation = evaluateSmaCross(
+      points,
+      strategy.shortWindow,
+      strategy.longWindow,
+      previousCross,
+      quote,
+    );
+    if (!evaluation) {
+      strategy.lastReason = "历史数据不足，至少需要长均线窗口加 1 个数据点";
+      strategy.lastAction = "hold";
+      strategy.lastEvaluatedAt = Date.now();
+      state.trading.updatedAt = Date.now();
+      scheduleSave();
+      if (manual) showToast(strategy.lastReason, "info");
+      return null;
+    }
+    recordStrategyEvaluation(state.trading, symbol, evaluation);
+    let signal = null;
+    if (evaluation.cross && evaluation.cross !== previousCross) {
+      signal = createTradingSignal(state.trading, symbol, evaluation);
+      if (strategy.enabled) {
+        let quantity = suggestedTradingQuantity(asset, strategy.orderNotional, quote.price);
+        if (strategy.agentEnabled) {
+          const stats = calculateTradingStats(state.trading, state.quotes);
+          const decision = evaluateTradingAgent(state.trading, signal, quote, quantity, stats);
+          if (decision.action === "block" || decision.action === "observe") {
+            showToast(`智能体暂不执行：${decision.reason}`, "info");
+            quantity = 0;
+          } else if (decision.action === "reduce") {
+            quantity = Math.max(
+              asset.kind === "fund" ? 0.01 : 100,
+              Math.floor(quantity / 2 / (asset.kind === "fund" ? 0.01 : 100)) *
+                (asset.kind === "fund" ? 0.01 : 100),
+            );
+          }
+        }
+        if (quantity <= 0) {
+          scheduleSave();
+          return { evaluation, signal };
+        }
+        const result = submitTradingOrder(
+          state.trading,
+          {
+            symbol,
+            side: evaluation.action === "sell" ? "sell" : "buy",
+            type: "market",
+            quantity,
+            reason: `SMA${strategy.shortWindow}/${strategy.longWindow} 自动信号`,
+          },
+          asset,
+          quote,
+        );
+        signal.orderId = result.order?.id ?? null;
+        if (result.error) showToast(`策略信号未能成交：${result.error}`, "error");
+        else if (result.fill) {
+          showToast(
+            `${asset.name} 自动${result.fill.side === "buy" ? "买入" : "卖出"} ${result.fill.quantity} 股/份`,
+            "success",
+          );
+        }
+      }
+    }
+    recordEquityPoint(state.trading, state.quotes, Date.now(), Boolean(signal));
+    scheduleSave();
+    if (manual) {
+      showToast(
+        evaluation.action === "hold" ? evaluation.reason : `${evaluation.reason}，已记录信号`,
+        "info",
+      );
+    }
+    return { evaluation, signal };
+  })().finally(() => {
+    tradingEvaluationPromise = null;
+  });
+  return tradingEvaluationPromise;
+}
+
+export function updateTradingStrategy(patch: Partial<TradingStrategy>) {
+  const strategy = state.trading.strategy;
+  if (patch.symbol && state.watchlist.includes(patch.symbol)) strategy.symbol = patch.symbol;
+  if (patch.shortWindow != null) {
+    strategy.shortWindow = Math.min(60, Math.max(2, Math.round(patch.shortWindow)));
+  }
+  if (patch.longWindow != null) {
+    strategy.longWindow = Math.min(240, Math.max(strategy.shortWindow + 1, Math.round(patch.longWindow)));
+  }
+  if (strategy.longWindow <= strategy.shortWindow) strategy.longWindow = strategy.shortWindow + 1;
+  if (patch.orderNotional != null) strategy.orderNotional = Math.max(1000, patch.orderNotional);
+  if (patch.enabled != null) strategy.enabled = patch.enabled;
+  if (patch.agentEnabled != null) strategy.agentEnabled = patch.agentEnabled;
+  state.trading.updatedAt = Date.now();
+  scheduleSave();
+}
+
+export function updateTradingRisk(patch: Partial<TradingRiskConfig>) {
+  const risk = state.trading.risk;
+  if (patch.maxPositionPct != null) risk.maxPositionPct = Math.min(100, Math.max(1, patch.maxPositionPct));
+  if (patch.maxDrawdownPct != null) risk.maxDrawdownPct = Math.min(80, Math.max(1, patch.maxDrawdownPct));
+  if (patch.dailyLossLimitPct != null) {
+    risk.dailyLossLimitPct = Math.min(30, Math.max(0.5, patch.dailyLossLimitPct));
+  }
+  if (patch.stopLossPct != null) risk.stopLossPct = Math.min(50, Math.max(0.5, patch.stopLossPct));
+  if (patch.takeProfitPct != null) risk.takeProfitPct = Math.min(200, Math.max(1, patch.takeProfitPct));
+  state.trading.updatedAt = Date.now();
+  scheduleSave();
+}
+
+let backtestPromise: Promise<unknown> | null = null;
+
+export async function runTradingBacktest() {
+  if (backtestPromise) return backtestPromise;
+  backtestPromise = (async () => {
+    const strategy = state.trading.strategy;
+    const asset = assetForSymbol(strategy.symbol);
+    const points = await fetchTrend(asset, "1y");
+    const result = runSmaBacktest(
+      points,
+      strategy,
+      asset,
+      state.trading.risk,
+      state.trading.initialCapital,
+    );
+    state.trading.backtest = result;
+    state.trading.updatedAt = Date.now();
+    scheduleSave();
+    showToast(
+      `回测完成：收益 ${result.totalReturn.toFixed(2)}%，最大回撤 ${result.maxDrawdown.toFixed(2)}%`,
+      result.riskPassed ? "success" : "info",
+    );
+    return result;
+  })().finally(() => {
+    backtestPromise = null;
+  });
+  return backtestPromise;
+}
+
+export function placeTradingOrder(input: {
+  symbol: string;
+  side: TradingSide;
+  type: TradingOrderType;
+  quantity: number;
+  limitPrice?: number | null;
+}) {
+  const asset = assetForSymbol(input.symbol);
+  const result = submitTradingOrder(state.trading, input, asset, quoteFor(input.symbol));
+  if (result.error) {
+    showToast(result.error, "error");
+    return result;
+  }
+  if (result.fill) {
+    showToast(
+      `${asset.name} ${result.fill.side === "buy" ? "买入" : "卖出"}成交 ${result.fill.quantity}，手续费 ¥${result.fill.fee.toFixed(2)}`,
+      "success",
+    );
+    recordEquityPoint(state.trading, state.quotes, Date.now(), true);
+  } else {
+    showToast(`${asset.name} 限价委托已挂单`, "info");
+  }
+  scheduleSave();
+  return result;
+}
+
+export function cancelPendingTradingOrder(orderId: string) {
+  const cancelled = cancelTradingOrder(state.trading, orderId);
+  if (cancelled) {
+    showToast("委托已撤销", "info");
+    scheduleSave();
+  }
+  return cancelled;
+}
+
+export function resetTradingAccount() {
+  resetLedger(state.trading, state.selectedSymbol ?? state.watchlist[0] ?? "");
+  scheduleSave();
+  void persistTradingNow();
+  showToast("模拟账户已重置", "info");
+}
+
 let refreshingPromise: Promise<void> | null = null;
 let lastFetchAt = 0;
 
@@ -512,6 +824,10 @@ export async function refreshQuotes(force = false) {
       lastFetchAt = Date.now();
       state.lastUpdated = lastFetchAt;
       checkAlerts();
+      if (!isTauri() || currentWindowLabel === "" || currentWindowLabel === "main") {
+        processTradingMarket();
+        if (state.trading.strategy.enabled) void evaluateTradingStrategy();
+      }
       void publishWindowMarket();
     } finally {
       state.refreshing = false;
@@ -874,7 +1190,14 @@ watch(
     state.events,
     state.settings,
     state.selectedSymbol,
+    state.trading,
   ],
   () => scheduleSave(),
+  { deep: true },
+);
+
+watch(
+  () => state.trading,
+  () => scheduleTradingDiskSave(),
   { deep: true },
 );
