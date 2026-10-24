@@ -19,6 +19,14 @@ const freshness = computed(() => {
   const seconds = Math.max(0, Math.floor((now.value.getTime() - state.lastUpdated) / 1000));
   const delayLimit = dataDelayLimitMs(state.settings.refreshSeconds, now.value) / 1000;
   const updatedAt = formatTime(new Date(state.lastUpdated).toISOString()).slice(11);
+  const snapshotAt = formatTime(new Date(state.lastUpdated).toISOString()).slice(5);
+  if (!state.online || state.marketFromCache) {
+    return {
+      tone: "cached",
+      text: `快照 ${snapshotAt}`,
+      detail: `${state.online ? "行情接口不可用" : "当前离线"}，显示最近一次成功快照`,
+    };
+  }
   if (dataMode.value === "demo") {
     const text = seconds < 10 ? "示例 · 刚刚" : `示例 · ${seconds} 秒前`;
     return { tone: "demo", text, detail: `当前为示例行情，最近同步于 ${updatedAt}` };
@@ -39,7 +47,7 @@ async function refresh() {
 
 <template>
   <header class="topbar">
-    <div class="index-strip" :class="{ stale: freshness.tone === 'delayed' }">
+    <div class="index-strip" :class="{ stale: freshness.tone === 'delayed' || freshness.tone === 'cached' }">
       <div v-for="index in state.indices" :key="index.symbol" class="index-item">
         <span class="index-name">{{ index.name }}</span>
         <span class="index-row">

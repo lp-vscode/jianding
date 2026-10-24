@@ -30,6 +30,8 @@ const todayEvents = computed(() => {
 const todayCount = computed(() => {
   return todayEvents.value.length;
 });
+const todayUnreadCount = computed(() => todayEvents.value.filter((event) => !event.read).length);
+const todayProcessedCount = computed(() => todayCount.value - todayUnreadCount.value);
 const eventGroups = computed(() => {
   const groups: Array<{ key: string; symbol: string; latest: (typeof state.events)[number]; count: number }> = [];
   for (const event of state.events) {
@@ -54,7 +56,7 @@ const mostActiveSymbol = computed(() => {
 });
 const healthState = computed(() => {
   if (!todayCount.value) return { label: "今日安静", detail: "暂无规则触发，保持轻量监控" };
-  if (unreadCount.value) return { label: "待处理", detail: `${unreadCount.value} 条触发尚未处理` };
+  if (todayUnreadCount.value) return { label: "待处理", detail: `${todayUnreadCount.value} 条触发尚未处理` };
   return { label: "节奏平稳", detail: `${todayCount.value} 次触发已全部处理` };
 });
 
@@ -144,7 +146,7 @@ async function copyDailyReview() {
   });
   const text = [
     "简盯 · 今日盯盘复盘",
-    `触发 ${todayCount.value} 次，合并为 ${todayGroupCount.value} 条摘要，未读 ${unreadCount.value} 条。`,
+    `触发 ${todayCount.value} 次，合并为 ${todayGroupCount.value} 条摘要，已处理 ${todayProcessedCount.value} 条，未处理 ${todayUnreadCount.value} 条。`,
     mostActiveSymbol.value ? `最活跃标的：${assetName(mostActiveSymbol.value)}` : "今日暂无活跃标的",
     ...lines,
   ].join("\n");
@@ -194,11 +196,11 @@ async function copyDailyReview() {
           <strong>{{ todayCount }} 次</strong>
         </span>
       </div>
-      <div class="strip-stat" :class="{ hot: unreadCount > 0 }">
+      <div class="strip-stat" :class="{ hot: todayUnreadCount > 0 }">
         <span class="strip-icon"><Inbox :size="15" /></span>
         <span class="strip-copy">
-          <span>未读记录</span>
-          <strong>{{ unreadCount }} 条</strong>
+          <span>已处理 / 未处理</span>
+          <strong>{{ todayProcessedCount }} / {{ todayUnreadCount }}</strong>
         </span>
       </div>
       <div class="strip-stat">

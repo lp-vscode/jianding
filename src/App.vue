@@ -20,6 +20,7 @@ import {
   hydrateTradingLedger,
   openAlertDialog,
   refreshAll,
+  setNetworkOnline,
   startPolling,
   startWindowSync,
   state,
@@ -72,6 +73,15 @@ function onKeydown(event: KeyboardEvent) {
   }
 }
 
+function onOnline() {
+  setNetworkOnline(true);
+  void refreshAll();
+}
+
+function onOffline() {
+  setNetworkOnline(false);
+}
+
 onMounted(() => {
   hydrate();
   void startWindowSync();
@@ -81,10 +91,14 @@ onMounted(() => {
     startPolling();
   }
   window.addEventListener("keydown", onKeydown);
+  window.addEventListener("online", onOnline);
+  window.addEventListener("offline", onOffline);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
+  window.removeEventListener("online", onOnline);
+  window.removeEventListener("offline", onOffline);
   stopSyncingWindows();
 });
 </script>

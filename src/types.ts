@@ -53,6 +53,12 @@ export interface IndexQuote {
   changePct: number;
 }
 
+export interface MarketSnapshot {
+  quotes: Record<string, Quote>;
+  indices: IndexQuote[];
+  updatedAt: number;
+}
+
 export interface Holding {
   id: string;
   symbol: string;

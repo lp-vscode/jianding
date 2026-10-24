@@ -28,6 +28,7 @@ const modeText = computed(() => {
   if (dataMode.value === "live") return "实时行情";
   if (dataMode.value === "mixed") return "实时 / 净值";
   if (dataMode.value === "demo") return "示例数据";
+  if (dataMode.value === "cached") return "本地快照";
   return "连接中";
 });
 

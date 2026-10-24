@@ -554,6 +554,15 @@
   background: var(--gold-soft);
 }
 
+.data-health.cached {
+  color: var(--gold-strong);
+}
+
+.data-health.cached .health-dot {
+  background: var(--gold-soft);
+  box-shadow: 0 0 0 3px var(--gold-wash);
+}
+
 .trend-mark {
   margin-left: 2px;
   font-family: var(--font-ui);

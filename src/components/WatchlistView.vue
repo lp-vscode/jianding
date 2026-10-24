@@ -396,6 +396,7 @@ function toggleWatch() {
 function stateLabel(symbol: string) {
   const current = quoteFor(symbol);
   if (!current) return "等待";
+  if (state.marketFromCache) return "缓存";
   if (current.state === "nav") return "净值";
   if (current.state === "demo") return "示例";
   return "实时";

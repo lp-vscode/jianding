@@ -8,6 +8,7 @@ import type {
   Asset,
   Holding,
   IndexQuote,
+  MarketSnapshot,
   Quote,
   SearchResult,
   Settings,
@@ -74,6 +75,7 @@ interface PersistedState {
   settings: Settings;
   selectedSymbol: string | null;
   trading: TradingLedger;
+  marketSnapshot: MarketSnapshot | null;
 }
 
 interface AppState extends PersistedState {
@@ -83,6 +85,8 @@ interface AppState extends PersistedState {
   indices: IndexQuote[];
   refreshing: boolean;
   lastUpdated: number | null;
+  marketFromCache: boolean;
+  online: boolean;
   searchOpen: boolean;
   toasts: ToastItem[];
   detailRange: TrendRange;
@@ -101,6 +105,7 @@ interface WindowMarketPayload {
   quotes: Record<string, Quote>;
   indices: IndexQuote[];
   lastUpdated: number | null;
+  fromCache: boolean;
 }
 
 interface WindowSyncRequest {
@@ -198,6 +203,7 @@ function defaultPersisted(): PersistedState {
     settings: { ...DEFAULT_SETTINGS },
     selectedSymbol: DEFAULT_ASSETS[0]?.symbol ?? null,
     trading: defaultTradingLedger(Date.now(), DEFAULT_ASSETS[0]?.symbol ?? ""),
+    marketSnapshot: null,
   };
 }
 
@@ -209,6 +215,8 @@ export const state = reactive<AppState>({
   indices: [],
   refreshing: false,
   lastUpdated: null,
+  marketFromCache: false,
+  online: typeof navigator === "undefined" ? true : navigator.onLine,
   searchOpen: false,
   toasts: [],
   detailRange: "intraday",
@@ -227,7 +235,8 @@ export const selectedAsset = computed(
   () => state.assets.find((asset) => asset.symbol === state.selectedSymbol) ?? watchlistAssets.value[0] ?? null,
 );
 
-export const dataMode = computed<"live" | "demo" | "mixed" | "loading">(() => {
+export const dataMode = computed<"live" | "demo" | "mixed" | "loading" | "cached">(() => {
+  if (state.marketFromCache) return "cached";
   const quotes = Object.values(state.quotes);
   if (!quotes.length) return "loading";
   const demo = quotes.filter((quote) => quote.state === "demo").length;
@@ -244,6 +253,25 @@ export function assetForSymbol(symbol: string) {
 
 export function quoteFor(symbol: string) {
   return state.quotes[symbol];
+}
+
+function applyMarketSnapshot(snapshot = state.marketSnapshot) {
+  if (!snapshot) return false;
+  state.quotes = snapshot.quotes;
+  state.indices = snapshot.indices;
+  state.lastUpdated = snapshot.updatedAt;
+  state.marketFromCache = true;
+  return true;
+}
+
+function captureMarketSnapshot() {
+  if (!state.lastUpdated || !Object.keys(state.quotes).length) return;
+  state.marketSnapshot = {
+    quotes: { ...state.quotes },
+    indices: state.indices.map((index) => ({ ...index })),
+    updatedAt: state.lastUpdated,
+  };
+  scheduleSave(0);
 }
 
 function sanitizePersisted(raw: unknown): PersistedState | null {
@@ -307,6 +335,19 @@ function sanitizePersisted(raw: unknown): PersistedState | null {
       ? (source.settings?.watchlistSort as Settings["watchlistSort"])
       : DEFAULT_SETTINGS.watchlistSort,
   };
+  const marketSnapshot =
+    source.marketSnapshot &&
+    typeof source.marketSnapshot === "object" &&
+    source.marketSnapshot.quotes &&
+    typeof source.marketSnapshot.quotes === "object" &&
+    Array.isArray(source.marketSnapshot.indices) &&
+    typeof source.marketSnapshot.updatedAt === "number"
+      ? {
+          quotes: source.marketSnapshot.quotes,
+          indices: source.marketSnapshot.indices,
+          updatedAt: source.marketSnapshot.updatedAt,
+        }
+      : null;
   return {
     version: 1,
     assets,
@@ -331,6 +372,7 @@ function sanitizePersisted(raw: unknown): PersistedState | null {
     settings,
     selectedSymbol: typeof source.selectedSymbol === "string" ? source.selectedSymbol : null,
     trading: sanitizeTradingLedger(source.trading, watchlist[0] ?? ""),
+    marketSnapshot,
   };
 }
 
@@ -354,6 +396,7 @@ function applyPersisted(persisted: PersistedState) {
   state.events = persisted.events;
   state.settings = persisted.settings;
   state.trading = persisted.trading;
+  state.marketSnapshot = persisted.marketSnapshot;
   state.selectedSymbol =
     persisted.selectedSymbol && watchlist.includes(persisted.selectedSymbol)
       ? persisted.selectedSymbol
@@ -381,6 +424,7 @@ function snapshot(): PersistedState {
     settings: state.settings,
     selectedSymbol: state.selectedSymbol,
     trading: state.trading,
+    marketSnapshot: state.marketSnapshot,
   };
 }
 
@@ -417,8 +461,14 @@ export function hydrate() {
   } catch (error) {
     console.warn("读取本地数据失败，已使用默认自选", error);
   }
+  if (!Object.keys(state.quotes).length) applyMarketSnapshot();
   state.view = state.settings.startView;
   state.ready = true;
+}
+
+export function setNetworkOnline(online: boolean) {
+  state.online = online;
+  if (!online) applyMarketSnapshot();
 }
 
 let tradingDiskTimer: number | undefined;
@@ -495,6 +545,7 @@ async function publishWindowMarket(target?: string) {
       quotes: state.quotes,
       indices: state.indices,
       lastUpdated: state.lastUpdated,
+      fromCache: state.marketFromCache,
     };
     if (target) {
       await emitTo(target, MARKET_SYNC_EVENT, payload);
@@ -571,6 +622,7 @@ export async function startWindowSync() {
       state.quotes = payload.quotes && typeof payload.quotes === "object" ? payload.quotes : {};
       state.indices = Array.isArray(payload.indices) ? payload.indices : [];
       state.lastUpdated = typeof payload.lastUpdated === "number" ? payload.lastUpdated : null;
+      state.marketFromCache = payload.fromCache === true;
     });
     unlisteners.push(unlistenMarket);
     const unlistenRequest = await listen<WindowSyncRequest>(SNAPSHOT_REQUEST_EVENT, (event) => {
@@ -858,16 +910,30 @@ export async function refreshQuotes(force = false) {
   if (!force && Date.now() - lastFetchAt < 1000) return;
   refreshingPromise = (async () => {
     state.refreshing = true;
+    state.online = typeof navigator === "undefined" ? true : navigator.onLine;
+    if (!state.online) {
+      applyMarketSnapshot();
+      state.refreshing = false;
+      refreshingPromise = null;
+      return;
+    }
     const symbols = new Set([...state.watchlist, ...state.holdings.map((holding) => holding.symbol)]);
     if (state.selectedSymbol) symbols.add(state.selectedSymbol);
     const assets = [...symbols].map(assetForSymbol);
     try {
       const quotes = await fetchQuotes(assets);
+      if (quotes.length && quotes.every((quote) => quote.state === "demo") && state.marketSnapshot) {
+        applyMarketSnapshot();
+        return;
+      }
       const next: Record<string, Quote> = { ...state.quotes };
       for (const quote of quotes) next[quote.symbol] = quote;
       state.quotes = next;
       lastFetchAt = Date.now();
       state.lastUpdated = lastFetchAt;
+      state.marketFromCache = false;
+      state.online = true;
+      captureMarketSnapshot();
       await checkAlerts();
       if (!isTauri() || currentWindowLabel === "" || currentWindowLabel === "main") {
         processTradingMarket();
@@ -883,10 +949,23 @@ export async function refreshQuotes(force = false) {
 }
 
 export async function refreshIndices() {
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    state.online = false;
+    applyMarketSnapshot();
+    return;
+  }
   try {
     const indices = await fetchIndices();
     if (indices.length) {
       state.indices = indices;
+      if (state.lastUpdated) {
+        state.marketSnapshot = {
+          quotes: { ...state.quotes },
+          indices: indices.map((index) => ({ ...index })),
+          updatedAt: state.lastUpdated,
+        };
+        scheduleSave(0);
+      }
       void publishWindowMarket();
     }
   } catch (error) {
