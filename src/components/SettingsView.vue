@@ -300,7 +300,7 @@ onBeforeUnmount(() => window.clearTimeout(resetTimer));
         <div class="shortcut-list">
           <div class="shortcut-row">
             <span><Keyboard :size="11" /> 搜索标的</span>
-            <kbd>⌘ K</kbd>
+            <kbd>⌘ K / /</kbd>
           </div>
           <div class="shortcut-row">
             <span><Keyboard :size="11" /> 切换自选</span>
@@ -309,6 +309,10 @@ onBeforeUnmount(() => window.clearTimeout(resetTimer));
           <div class="shortcut-row">
             <span><BellRing :size="11" /> 快速提醒</span>
             <kbd>R</kbd>
+          </div>
+          <div class="shortcut-row">
+            <span><BellRing :size="11" /> 新建提醒</span>
+            <kbd>N</kbd>
           </div>
           <div class="shortcut-row">
             <span><Keyboard :size="11" /> 分组与更多</span>

@@ -62,12 +62,29 @@ export interface Holding {
   updatedAt: number;
 }
 
-export type AlertType = "priceAbove" | "priceBelow" | "pctAbove" | "pctBelow" | "amountAbove";
+export type AlertType =
+  | "priceAbove"
+  | "priceBelow"
+  | "pctAbove"
+  | "pctBelow"
+  | "amountAbove"
+  | "rsiAbove"
+  | "rsiBelow"
+  | "smaGolden"
+  | "smaDeath"
+  | "volumeSpike"
+  | "gapUp"
+  | "gapDown"
+  | "pnlAbove"
+  | "pnlBelow";
 export type AlertLogic = "all" | "any";
+export type AlertSchedule = "any" | "trading" | "preopen" | "last10";
 
 export interface AlertCondition {
   type: AlertType;
   threshold: number;
+  period?: number;
+  secondaryPeriod?: number;
 }
 
 export interface AlertRule {
@@ -80,6 +97,7 @@ export interface AlertRule {
   enabled: boolean;
   createdAt: number;
   lastTriggeredAt: number | null;
+  schedule?: AlertSchedule;
 }
 
 export interface WatchlistGroup {
@@ -229,6 +247,10 @@ export interface AlertEvent {
   price: number;
   at: number;
   read: boolean;
+  changePct?: number | null;
+  amount?: number | null;
+  volume?: number | null;
+  source?: string;
 }
 
 export interface Settings {

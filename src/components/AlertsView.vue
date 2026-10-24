@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from "vue";
-import { BellPlus, BellRing, CheckCheck, Inbox, Pencil, Plus, Trash2, Zap } from "lucide-vue-next";
+import { Activity, BellPlus, BellRing, CheckCheck, Copy, Inbox, Pencil, Plus, Trash2, Zap } from "lucide-vue-next";
 import type { AlertRule } from "../types";
 import {
   deleteAlert,
@@ -8,11 +8,12 @@ import {
   openAlertDialog,
   quoteFor,
   selectAsset,
+  showToast,
   state,
   updateAlert,
 } from "../lib/store";
 import { alertConditions, alertRuleSummary, isTriggered } from "../lib/alerts";
-import { timeAgo } from "../lib/format";
+import { formatCompactMoney, formatPercent, formatPrice, priceDigits, timeAgo } from "../lib/format";
 
 const pendingDelete = ref<string | null>(null);
 let deleteTimer: number | undefined;
@@ -21,10 +22,40 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
 
 const activeCount = computed(() => state.alerts.filter((rule) => rule.enabled).length);
 const unreadCount = computed(() => state.events.filter((event) => !event.read).length);
-const todayCount = computed(() => {
+const todayEvents = computed(() => {
   const start = new Date();
   start.setHours(0, 0, 0, 0);
-  return state.events.filter((event) => event.at >= start.getTime()).length;
+  return state.events.filter((event) => event.at >= start.getTime());
+});
+const todayCount = computed(() => {
+  return todayEvents.value.length;
+});
+const eventGroups = computed(() => {
+  const groups: Array<{ key: string; symbol: string; latest: (typeof state.events)[number]; count: number }> = [];
+  for (const event of state.events) {
+    const current = groups.find(
+      (group) =>
+        group.symbol === event.symbol &&
+        Math.abs(group.latest.at - event.at) <= 5 * 60 * 1000,
+    );
+    if (current) current.count += 1;
+    else groups.push({ key: event.id, symbol: event.symbol, latest: event, count: 1 });
+  }
+  return groups;
+});
+const todayGroupCount = computed(() => {
+  const todayIds = new Set(todayEvents.value.map((event) => event.id));
+  return eventGroups.value.filter((group) => todayIds.has(group.latest.id)).length;
+});
+const mostActiveSymbol = computed(() => {
+  const counts = new Map<string, number>();
+  for (const event of todayEvents.value) counts.set(event.symbol, (counts.get(event.symbol) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+});
+const healthState = computed(() => {
+  if (!todayCount.value) return { label: "今日安静", detail: "暂无规则触发，保持轻量监控" };
+  if (unreadCount.value) return { label: "待处理", detail: `${unreadCount.value} 条触发尚未处理` };
+  return { label: "节奏平稳", detail: `${todayCount.value} 次触发已全部处理` };
 });
 
 function assetOf(symbol: string) {
@@ -53,6 +84,30 @@ function distance(rule: AlertRule) {
     const delta = Math.max(0, condition.threshold - quote.amount / 100_000_000);
     return { text: `还差 ${delta.toFixed(2)} 亿`, tone: "flat" as const };
   }
+  if (
+    condition.type === "rsiAbove" ||
+    condition.type === "rsiBelow" ||
+    condition.type === "smaGolden" ||
+    condition.type === "smaDeath" ||
+    condition.type === "volumeSpike"
+  ) {
+    return { text: "指标监控", tone: "flat" as const };
+  }
+  if (condition.type === "gapUp" || condition.type === "gapDown") {
+    if (quote.open == null || quote.previousClose == null || quote.previousClose <= 0) {
+      return { text: "等待开盘", tone: "flat" as const };
+    }
+    const gap = ((quote.open - quote.previousClose) / quote.previousClose) * 100;
+    return { text: `当前跳空 ${gap >= 0 ? "+" : ""}${gap.toFixed(2)}%`, tone: "flat" as const };
+  }
+  if (condition.type === "pnlAbove" || condition.type === "pnlBelow") {
+    const holding = state.holdings.find((item) => item.symbol === rule.symbol);
+    if (!holding || quote.price == null || holding.cost <= 0) {
+      return { text: "等待持仓", tone: "flat" as const };
+    }
+    const pnlPct = ((quote.price - holding.cost) / holding.cost) * 100;
+    return { text: `当前 ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`, tone: "flat" as const };
+  }
   if (quote.price == null || quote.price <= 0) return { text: "--", tone: "flat" as const };
   const delta =
     condition.type === "priceAbove"
@@ -80,6 +135,25 @@ function requestDelete(id: string) {
 
 function openEvent(symbol: string) {
   selectAsset(symbol);
+}
+
+async function copyDailyReview() {
+  const lines = todayEvents.value.slice(0, 20).map((event) => {
+    const pct = event.changePct == null ? "" : `，${formatPercent(event.changePct)}`;
+    return `- ${event.name}：${event.message}（${new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}${pct}）`;
+  });
+  const text = [
+    "简盯 · 今日盯盘复盘",
+    `触发 ${todayCount.value} 次，合并为 ${todayGroupCount.value} 条摘要，未读 ${unreadCount.value} 条。`,
+    mostActiveSymbol.value ? `最活跃标的：${assetName(mostActiveSymbol.value)}` : "今日暂无活跃标的",
+    ...lines,
+  ].join("\n");
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("今日复盘摘要已复制", "success");
+  } catch {
+    showToast("复制失败，请检查剪贴板权限", "error");
+  }
 }
 </script>
 
@@ -127,6 +201,28 @@ function openEvent(symbol: string) {
           <strong>{{ unreadCount }} 条</strong>
         </span>
       </div>
+      <div class="strip-stat">
+        <span class="strip-icon"><Activity :size="15" /></span>
+        <span class="strip-copy">
+          <span>最活跃标的</span>
+          <strong>{{ mostActiveSymbol ? assetName(mostActiveSymbol) : "--" }}</strong>
+        </span>
+      </div>
+    </div>
+
+    <div class="panel alert-health">
+      <span class="alert-health-state">
+        <i />
+        <strong>{{ healthState.label }}</strong>
+        <small>{{ healthState.detail }}</small>
+      </span>
+      <span class="alert-health-summary">
+        今日 {{ todayCount }} 次触发合并为 {{ todayGroupCount }} 条摘要
+      </span>
+      <button class="btn btn-small" type="button" :disabled="!todayCount" @click="copyDailyReview">
+        <Copy :size="12" />
+        复制今日复盘
+      </button>
     </div>
 
     <div class="alerts-layout">
@@ -167,14 +263,16 @@ function openEvent(symbol: string) {
                     ? rule.logic === "any"
                       ? "满足任一条件"
                       : "需同时满足"
-                    : "单条件提醒"
+                    : rule.schedule && rule.schedule !== "any"
+                      ? "限定时段"
+                      : "单条件提醒"
                 }}
               </span>
               <strong>{{ alertRuleSummary(rule) }}</strong>
             </div>
             <div class="rule-distance">
               <strong :class="distance(rule).tone">{{ distance(rule).text }}</strong>
-              <small>{{ rule.enabled ? "距触发" : "已暂停" }}</small>
+              <small>{{ rule.enabled ? (distance(rule).text === "指标监控" ? "监控中" : "距触发") : "已暂停" }}</small>
             </div>
             <div class="rule-tools">
               <button
@@ -234,19 +332,30 @@ function openEvent(symbol: string) {
 
         <div v-else class="event-list">
           <div
-            v-for="event in state.events"
-            :key="event.id"
+            v-for="group in eventGroups"
+            :key="group.key"
             class="event-row"
-            :class="{ unread: !event.read }"
+            :class="{ unread: !group.latest.read }"
             role="button"
             tabindex="0"
-            @click="openEvent(event.symbol)"
-            @keydown.enter="openEvent(event.symbol)"
+            @click="openEvent(group.symbol)"
+            @keydown.enter="openEvent(group.symbol)"
           >
             <i class="event-dot" />
             <div class="event-copy">
-              <p>{{ event.message }}</p>
-              <small>{{ timeAgo(event.at) }} · {{ event.name }}</small>
+              <p>{{ group.latest.message }}</p>
+              <div class="event-snapshot">
+                <span>{{ formatPrice(group.latest.price, priceDigits(state.assets.find((asset) => asset.symbol === group.symbol)?.kind ?? "stock", group.latest.price)) }}</span>
+                <span v-if="group.latest.changePct != null" :class="group.latest.changePct >= 0 ? 'up' : 'down'">
+                  {{ formatPercent(group.latest.changePct) }}
+                </span>
+                <span v-if="group.latest.amount != null">{{ formatCompactMoney(group.latest.amount) }}</span>
+                <span v-if="group.latest.source">{{ group.latest.source }}</span>
+              </div>
+              <small>
+                {{ timeAgo(group.latest.at) }} · {{ group.latest.name }}
+                <template v-if="group.count > 1"> · 5 分钟内合并 {{ group.count }} 次</template>
+              </small>
             </div>
           </div>
         </div>

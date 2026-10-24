@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { AlertRule, Quote } from "../types";
-import { alertRuleSummary, isTriggered } from "./alerts";
+import type { AlertRule, Quote, TrendPoint } from "../types";
+import { alertRuleSummary, isConditionTriggered, isTriggered } from "./alerts";
 
 function quote(patch: Partial<Quote> = {}): Quote {
   return {
@@ -75,5 +75,30 @@ describe("alert conditions", () => {
       logic: "all",
     });
     expect(alertRuleSummary(composite)).toBe("涨破 1,350.00 且 成交额 10.00 亿");
+  });
+
+  it("evaluates technical and holdings-aware conditions", () => {
+    const rising: TrendPoint[] = [1, 2, 3, 4].map((value, index) => ({ label: String(index), value }));
+    expect(isConditionTriggered({ type: "rsiAbove", threshold: 70, period: 2 }, quote(), { trend: rising })).toBe(true);
+    expect(
+      isConditionTriggered({ type: "gapUp", threshold: 0.5 }, quote({ open: 1290, previousClose: 1280 })),
+    ).toBe(true);
+    expect(
+      isConditionTriggered({ type: "pnlAbove", threshold: 10 }, quote({ price: 1160 }), { holdingCost: 1000 }),
+    ).toBe(true);
+  });
+
+  it("detects a moving-average golden cross", () => {
+    const points: TrendPoint[] = [10, 10, 10, 10, 4, 20].map((value, index) => ({
+      label: String(index),
+      value,
+    }));
+    expect(
+      isConditionTriggered(
+        { type: "smaGolden", threshold: 1, period: 3, secondaryPeriod: 5 },
+        quote(),
+        { trend: points },
+      ),
+    ).toBe(true);
   });
 });

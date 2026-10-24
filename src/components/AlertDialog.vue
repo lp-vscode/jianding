@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { AlertCircle, BellRing, Info, Plus, Trash2, X } from "lucide-vue-next";
-import type { AlertLogic, AlertType } from "../types";
+import type { AlertLogic, AlertSchedule, AlertType } from "../types";
 import {
   assetForSymbol,
   closeAlertDialog,
@@ -19,9 +19,17 @@ import { directionMark, formatPercent, formatPrice, priceDigits, toneOf } from "
 interface ConditionDraft {
   type: AlertType;
   value: string;
+  period?: number;
+  secondaryPeriod?: number;
 }
 
-type AlertTemplateKey = "breakout" | "volume" | "pullback" | "volatility";
+type AlertTemplateKey =
+  | "breakout"
+  | "volume"
+  | "pullback"
+  | "volatility"
+  | "goldenCross"
+  | "rsiOversold";
 
 const rule = state.alertDialog.rule;
 const editing = Boolean(rule);
@@ -29,15 +37,22 @@ const editing = Boolean(rule);
 const symbol = ref(state.alertDialog.symbol ?? state.selectedSymbol ?? state.watchlist[0] ?? "");
 const initialConditions = rule ? alertConditions(rule) : [{ type: "priceAbove" as const, threshold: 0 }];
 const conditions = ref<ConditionDraft[]>(
-  initialConditions.map((condition) => ({ type: condition.type, value: condition.threshold ? String(condition.threshold) : "0" })),
+  initialConditions.map((condition) => ({
+    type: condition.type,
+    value: condition.threshold ? String(condition.threshold) : "0",
+    period: condition.period,
+    secondaryPeriod: condition.secondaryPeriod,
+  })),
 );
 const logic = ref<AlertLogic>(rule?.logic ?? "all");
+const schedule = ref<AlertSchedule>(rule?.schedule ?? "any");
 const error = ref("");
 const deleteArmed = ref(false);
 let deleteTimer: number | undefined;
 
 const asset = computed(() => (symbol.value ? assetForSymbol(symbol.value) : null));
 const quote = computed(() => (symbol.value ? quoteFor(symbol.value) : undefined));
+const holding = computed(() => state.holdings.find((item) => item.symbol === symbol.value));
 const digits = computed(() => priceDigits(asset.value?.kind ?? "stock", quote.value?.price ?? null));
 
 const typeOptions: { key: AlertType; label: string; hint: string }[] = [
@@ -46,6 +61,15 @@ const typeOptions: { key: AlertType; label: string; hint: string }[] = [
   { key: "pctAbove", label: "涨幅超过", hint: "%" },
   { key: "pctBelow", label: "跌幅超过", hint: "%" },
   { key: "amountAbove", label: "成交额达到", hint: "亿元" },
+  { key: "rsiAbove", label: "RSI 超买", hint: "高于" },
+  { key: "rsiBelow", label: "RSI 超卖", hint: "低于" },
+  { key: "smaGolden", label: "均线金叉", hint: "短线上穿" },
+  { key: "smaDeath", label: "均线死叉", hint: "短线下穿" },
+  { key: "volumeSpike", label: "成交量异动", hint: "均量倍数" },
+  { key: "gapUp", label: "向上跳空", hint: "%" },
+  { key: "gapDown", label: "向下跳空", hint: "%" },
+  { key: "pnlAbove", label: "持仓止盈", hint: "盈利%" },
+  { key: "pnlBelow", label: "持仓止损", hint: "亏损%" },
 ];
 
 const templates = computed(() => {
@@ -75,6 +99,18 @@ const templates = computed(() => {
       description: "涨跌任一方向达到 5%",
       disabled: false,
     },
+    {
+      key: "goldenCross" as const,
+      label: "均线金叉",
+      description: "SMA 5 上穿 SMA 20",
+      disabled: false,
+    },
+    {
+      key: "rsiOversold" as const,
+      label: "RSI 超卖",
+      description: "RSI 14 低于 30",
+      disabled: false,
+    },
   ];
 });
 
@@ -88,22 +124,54 @@ function defaultPrice(next: AlertType) {
 function defaultValue(type: AlertType) {
   if (type === "pctAbove" || type === "pctBelow") return "5";
   if (type === "amountAbove") return "10";
+  if (type === "rsiAbove") return "70";
+  if (type === "rsiBelow") return "30";
+  if (type === "smaGolden" || type === "smaDeath") return "1";
+  if (type === "volumeSpike") return "2";
+  if (type === "gapUp" || type === "gapDown") return "1";
+  if (type === "pnlAbove" || type === "pnlBelow") return "10";
   return defaultPrice(type);
 }
 
 function conditionDraft(type: AlertType, value = defaultValue(type)): ConditionDraft {
-  return { type, value };
+  return {
+    type,
+    value,
+    period:
+      type === "rsiAbove" || type === "rsiBelow"
+        ? 14
+        : type === "volumeSpike"
+          ? 20
+          : type === "smaGolden" || type === "smaDeath"
+            ? 5
+            : undefined,
+    secondaryPeriod: type === "smaGolden" || type === "smaDeath" ? 20 : undefined,
+  };
 }
 
 function unitFor(type: AlertType) {
-  if (type === "pctAbove" || type === "pctBelow") return "%";
+  if (
+    type === "pctAbove" ||
+    type === "pctBelow" ||
+    type === "gapUp" ||
+    type === "gapDown" ||
+    type === "pnlAbove" ||
+    type === "pnlBelow"
+  ) return "%";
   if (type === "amountAbove") return "亿";
+  if (type === "rsiAbove" || type === "rsiBelow") return "RSI";
+  if (type === "volumeSpike") return "倍";
+  if (type === "smaGolden" || type === "smaDeath") return "";
   return "元";
 }
 
 function placeholderFor(type: AlertType) {
   if (type === "pctAbove" || type === "pctBelow") return "5.00";
   if (type === "amountAbove") return "10.00";
+  if (type === "rsiAbove") return "70";
+  if (type === "rsiBelow") return "30";
+  if (type === "volumeSpike") return "2.00";
+  if (type === "gapUp" || type === "gapDown" || type === "pnlAbove" || type === "pnlBelow") return "1.00";
   return "0.00";
 }
 
@@ -112,7 +180,18 @@ function setConditionType(index: number, type: AlertType) {
   if (!current) return;
   const unitChanged = unitFor(current.type) !== unitFor(type);
   current.type = type;
-  if (unitChanged) current.value = defaultValue(type);
+  if (unitChanged) {
+    current.value = defaultValue(type);
+    current.period =
+      type === "rsiAbove" || type === "rsiBelow"
+        ? 14
+        : type === "volumeSpike"
+          ? 20
+          : type === "smaGolden" || type === "smaDeath"
+            ? 5
+            : undefined;
+    current.secondaryPeriod = type === "smaGolden" || type === "smaDeath" ? 20 : undefined;
+  }
   error.value = "";
 }
 
@@ -146,8 +225,16 @@ function applyTemplate(key: AlertTemplateKey) {
     conditions.value = [conditionDraft("priceBelow", String(Number((price * 0.97).toFixed(digits.value))))];
     logic.value = "all";
   } else {
-    conditions.value = [conditionDraft("pctAbove", "5"), conditionDraft("pctBelow", "5")];
-    logic.value = "any";
+    if (key === "goldenCross") {
+      conditions.value = [conditionDraft("smaGolden", "1")];
+      logic.value = "all";
+    } else if (key === "rsiOversold") {
+      conditions.value = [conditionDraft("rsiBelow", "30")];
+      logic.value = "all";
+    } else {
+      conditions.value = [conditionDraft("pctAbove", "5"), conditionDraft("pctBelow", "5")];
+      logic.value = "any";
+    }
   }
   error.value = "";
 }
@@ -156,6 +243,8 @@ function parsedConditions() {
   return conditions.value.map((condition) => ({
     type: condition.type,
     threshold: Number(condition.value),
+    period: condition.period,
+    secondaryPeriod: condition.secondaryPeriod,
   }));
 }
 
@@ -164,6 +253,12 @@ function draftValueText(condition: ConditionDraft) {
   if (!Number.isFinite(value) || value <= 0) return "待填写";
   if (condition.type === "pctAbove" || condition.type === "pctBelow") return `${Math.abs(value).toFixed(2)}%`;
   if (condition.type === "amountAbove") return `${value.toFixed(2)} 亿`;
+  if (condition.type === "rsiAbove" || condition.type === "rsiBelow") return `${value.toFixed(1)}（${condition.period ?? 14} 日）`;
+  if (condition.type === "smaGolden" || condition.type === "smaDeath") return `SMA ${condition.period ?? 5}/${condition.secondaryPeriod ?? 20}`;
+  if (condition.type === "volumeSpike") return `${value.toFixed(1)}× ${condition.period ?? 20} 日均量`;
+  if (condition.type === "gapUp" || condition.type === "gapDown" || condition.type === "pnlAbove" || condition.type === "pnlBelow") {
+    return `${Math.abs(value).toFixed(2)}%`;
+  }
   return `${formatPrice(value, digits.value)} 元`;
 }
 
@@ -201,6 +296,13 @@ function save() {
     error.value = "场外基金暂不提供盘中成交额条件";
     return;
   }
+  if (
+    parsed.some((condition) => condition.type === "pnlAbove" || condition.type === "pnlBelow") &&
+    !state.holdings.some((holding) => holding.symbol === symbol.value)
+  ) {
+    error.value = "请先为这个标的录入持仓，才能使用盈亏提醒";
+    return;
+  }
   const first = parsed[0];
   if (rule) {
     updateAlert(rule.id, {
@@ -209,6 +311,7 @@ function save() {
       threshold: first.threshold,
       conditions: parsed,
       logic: parsed.length > 1 ? logic.value : "all",
+      schedule: schedule.value,
       lastTriggeredAt: null,
     });
     showToast("提醒规则已更新", "success");
@@ -219,6 +322,7 @@ function save() {
       threshold: first.threshold,
       conditions: parsed,
       logic: parsed.length > 1 ? logic.value : "all",
+      schedule: schedule.value,
     });
   }
   closeAlertDialog();
@@ -344,20 +448,46 @@ onMounted(() => document.querySelector<HTMLInputElement>(".condition-row input")
                   v-for="option in typeOptions"
                   :key="option.key"
                   :value="option.key"
-                  :disabled="option.key === 'amountAbove' && asset?.market === 'jj'"
+                  :disabled="
+                    (option.key === 'amountAbove' && asset?.market === 'jj') ||
+                    ((option.key === 'pnlAbove' || option.key === 'pnlBelow') && !holding)
+                  "
                 >
                   {{ option.label }}
                 </option>
               </select>
-              <div class="input-suffix">
-                <input
-                  v-model="condition.value"
-                  inputmode="decimal"
-                  autocomplete="off"
-                  :placeholder="placeholderFor(condition.type)"
-                  :aria-label="`${typeOptions.find((option) => option.key === condition.type)?.label ?? '提醒'}阈值`"
-                />
-                <em>{{ unitFor(condition.type) }}</em>
+              <div class="condition-value-group">
+                <div v-if="condition.type !== 'smaGolden' && condition.type !== 'smaDeath'" class="input-suffix">
+                  <input
+                    v-model="condition.value"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    :placeholder="placeholderFor(condition.type)"
+                    :aria-label="`${typeOptions.find((option) => option.key === condition.type)?.label ?? '提醒'}阈值`"
+                  />
+                  <em>{{ unitFor(condition.type) }}</em>
+                </div>
+                <label
+                  v-if="condition.type === 'rsiAbove' || condition.type === 'rsiBelow' || condition.type === 'volumeSpike'"
+                  class="indicator-window"
+                >
+                  <span>周期</span>
+                  <input v-model.number="condition.period" type="number" min="2" max="120" />
+                </label>
+                <label
+                  v-if="condition.type === 'smaGolden' || condition.type === 'smaDeath'"
+                  class="indicator-window"
+                >
+                  <span>短</span>
+                  <input v-model.number="condition.period" type="number" min="2" max="60" />
+                </label>
+                <label
+                  v-if="condition.type === 'smaGolden' || condition.type === 'smaDeath'"
+                  class="indicator-window"
+                >
+                  <span>长</span>
+                  <input v-model.number="condition.secondaryPeriod" type="number" min="3" max="240" />
+                </label>
               </div>
               <button
                 v-if="conditions.length > 1"
@@ -400,6 +530,17 @@ onMounted(() => document.querySelector<HTMLInputElement>(".condition-row input")
             </div>
           </div>
         </div>
+
+        <label class="field">
+          <span>监控时段</span>
+          <select v-model="schedule" aria-label="提醒监控时段">
+            <option value="any">全天有效</option>
+            <option value="trading">仅交易时段</option>
+            <option value="preopen">集合竞价</option>
+            <option value="last10">尾盘 10 分钟</option>
+          </select>
+          <small>本机提醒仅在应用运行时检查；关闭应用后不会在后台触发</small>
+        </label>
 
         <div class="alert-preview">
           <BellRing :size="13" />

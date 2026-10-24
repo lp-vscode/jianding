@@ -2,6 +2,7 @@ import { computed, nextTick, reactive, watch } from "vue";
 import type {
   AlertEvent,
   AlertCondition,
+  AlertSchedule,
   AlertRule,
   AlertType,
   Asset,
@@ -28,9 +29,9 @@ import {
   loadTradingLedgerDisk,
   saveTradingLedgerDisk,
 } from "./backend";
-import { alertEventMessage, isTriggered } from "./alerts";
+import { alertConditions, alertEventMessage, isTriggered } from "./alerts";
 import { DEFAULT_ASSETS, demoAsset } from "./demo";
-import { effectiveRefreshMs } from "./market";
+import { effectiveRefreshMs, marketPhase, shanghaiParts } from "./market";
 import {
   cancelTradingOrder,
   calculateTradingStats,
@@ -114,7 +115,22 @@ function uid(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-const ALERT_TYPES: AlertType[] = ["priceAbove", "priceBelow", "pctAbove", "pctBelow", "amountAbove"];
+const ALERT_TYPES: AlertType[] = [
+  "priceAbove",
+  "priceBelow",
+  "pctAbove",
+  "pctBelow",
+  "amountAbove",
+  "rsiAbove",
+  "rsiBelow",
+  "smaGolden",
+  "smaDeath",
+  "volumeSpike",
+  "gapUp",
+  "gapDown",
+  "pnlAbove",
+  "pnlBelow",
+];
 
 function sanitizeAlertCondition(raw: unknown): AlertCondition | null {
   if (!raw || typeof raw !== "object") return null;
@@ -122,7 +138,23 @@ function sanitizeAlertCondition(raw: unknown): AlertCondition | null {
   if (!ALERT_TYPES.includes(condition.type as AlertType)) return null;
   const threshold = Number(condition.threshold);
   if (!Number.isFinite(threshold) || threshold <= 0) return null;
-  return { type: condition.type as AlertType, threshold };
+  const type = condition.type as AlertType;
+  return {
+    type,
+    threshold,
+    period:
+      type === "rsiAbove" || type === "rsiBelow"
+        ? Math.min(60, Math.max(2, Math.round(Number(condition.period) || 14)))
+        : type === "volumeSpike"
+          ? Math.min(120, Math.max(2, Math.round(Number(condition.period) || 20)))
+          : type === "smaGolden" || type === "smaDeath"
+            ? Math.min(60, Math.max(2, Math.round(Number(condition.period) || 5)))
+            : undefined,
+    secondaryPeriod:
+      type === "smaGolden" || type === "smaDeath"
+        ? Math.min(240, Math.max(3, Math.round(Number(condition.secondaryPeriod) || 20)))
+        : undefined,
+  };
 }
 
 function sanitizeAlertRule(raw: unknown): AlertRule | null {
@@ -142,6 +174,11 @@ function sanitizeAlertRule(raw: unknown): AlertRule | null {
     threshold: first.threshold,
     conditions: conditions.length ? conditions : [first],
     logic: rule.logic === "any" ? "any" : "all",
+    schedule: (["any", "trading", "preopen", "last10"] as AlertSchedule[]).includes(
+      rule.schedule as AlertSchedule,
+    )
+      ? (rule.schedule as AlertSchedule)
+      : "any",
     enabled: rule.enabled !== false,
     createdAt: typeof rule.createdAt === "number" ? rule.createdAt : Date.now(),
     lastTriggeredAt: typeof rule.lastTriggeredAt === "number" ? rule.lastTriggeredAt : null,
@@ -282,7 +319,15 @@ function sanitizePersisted(raw: unknown): PersistedState | null {
     alerts: Array.isArray(source.alerts)
       ? source.alerts.map(sanitizeAlertRule).filter((item): item is AlertRule => Boolean(item))
       : [],
-    events: Array.isArray(source.events) ? source.events.slice(0, 80) : [],
+    events: Array.isArray(source.events)
+      ? source.events.slice(0, 80).map((event) => ({
+          ...event,
+          changePct: typeof event.changePct === "number" ? event.changePct : null,
+          amount: typeof event.amount === "number" ? event.amount : null,
+          volume: typeof event.volume === "number" ? event.volume : null,
+          source: typeof event.source === "string" ? event.source : "",
+        }))
+      : [],
     settings,
     selectedSymbol: typeof source.selectedSymbol === "string" ? source.selectedSymbol : null,
     trading: sanitizeTradingLedger(source.trading, watchlist[0] ?? ""),
@@ -823,7 +868,7 @@ export async function refreshQuotes(force = false) {
       state.quotes = next;
       lastFetchAt = Date.now();
       state.lastUpdated = lastFetchAt;
-      checkAlerts();
+      await checkAlerts();
       if (!isTauri() || currentWindowLabel === "" || currentWindowLabel === "main") {
         processTradingMarket();
         if (state.trading.strategy.enabled) void evaluateTradingStrategy();
@@ -1106,13 +1151,64 @@ async function sendSystemNotification(body: string) {
   }
 }
 
-function checkAlerts() {
+const technicalTrendCache = new Map<string, { at: number; points: Awaited<ReturnType<typeof fetchTrend>> }>();
+let alertEvaluationPromise: Promise<void> | null = null;
+
+const TECHNICAL_ALERT_TYPES = new Set<AlertType>([
+  "rsiAbove",
+  "rsiBelow",
+  "smaGolden",
+  "smaDeath",
+  "volumeSpike",
+]);
+
+function alertScheduleActive(schedule: AlertSchedule = "any", now = new Date()) {
+  if (schedule === "any") return true;
+  if (schedule === "trading") return marketPhase(now) === "交易中";
+  if (schedule === "preopen") return marketPhase(now) === "集合竞价";
+  const parts = shanghaiParts(now);
+  const minutes = parts.hour * 60 + parts.minute;
+  return marketPhase(now) === "交易中" && minutes >= 14 * 60 + 50 && minutes <= 15 * 60;
+}
+
+async function checkAlerts() {
+  if (alertEvaluationPromise) return alertEvaluationPromise;
+  alertEvaluationPromise = (async () => {
   const now = Date.now();
+  const symbols = new Set<string>();
+  const cycleEvents = new Map<string, AlertEvent[]>();
+  for (const rule of state.alerts) {
+    if (!rule.enabled || !alertScheduleActive(rule.schedule, new Date(now))) continue;
+    if (alertConditions(rule).some((condition) => TECHNICAL_ALERT_TYPES.has(condition.type))) {
+      symbols.add(rule.symbol);
+    }
+  }
+  await Promise.all(
+    [...symbols].map(async (symbol) => {
+      const cached = technicalTrendCache.get(symbol);
+      if (cached && now - cached.at < 90_000) return;
+      try {
+        const points = await fetchTrend(assetForSymbol(symbol), "1y");
+        technicalTrendCache.set(symbol, { at: now, points });
+      } catch (error) {
+        console.warn(`技术指标行情加载失败 ${symbol}`, error);
+      }
+    }),
+  );
   for (const rule of state.alerts) {
     if (!rule.enabled) continue;
+    if (!alertScheduleActive(rule.schedule, new Date(now))) continue;
     if (rule.lastTriggeredAt && now - rule.lastTriggeredAt < ALERT_COOLDOWN) continue;
     const quote = state.quotes[rule.symbol];
-    if (!isTriggered(rule, quote)) continue;
+    const holding = state.holdings.find((item) => item.symbol === rule.symbol);
+    if (
+      !isTriggered(rule, quote, {
+        trend: technicalTrendCache.get(rule.symbol)?.points,
+        holdingCost: holding?.cost,
+      })
+    ) {
+      continue;
+    }
     rule.lastTriggeredAt = now;
     const event: AlertEvent = {
       id: uid("event"),
@@ -1123,13 +1219,33 @@ function checkAlerts() {
       price: quote.price ?? 0,
       at: now,
       read: false,
+      changePct: quote.changePct,
+      amount: quote.amount,
+      volume: quote.volume,
+      source: quote.source,
     };
     state.events.unshift(event);
     if (state.events.length > 80) state.events.length = 80;
-    showToast(event.message, "info", 5600);
-    void sendSystemNotification(event.message);
+    const symbolEvents = cycleEvents.get(rule.symbol) ?? [];
+    symbolEvents.push(event);
+    cycleEvents.set(rule.symbol, symbolEvents);
     scheduleSave();
   }
+  for (const events of cycleEvents.values()) {
+    const first = events[0];
+    const message =
+      events.length === 1
+        ? first.message
+        : `${first.name} 同时触发 ${events.length} 条提醒：${events
+            .map((event) => event.message.replace(`${first.name} `, ""))
+            .join("；")}`;
+    showToast(message, "info", 5600);
+    void sendSystemNotification(message);
+  }
+  })().finally(() => {
+    alertEvaluationPromise = null;
+  });
+  return alertEvaluationPromise;
 }
 
 export function updateSettings(patch: Partial<Settings>) {

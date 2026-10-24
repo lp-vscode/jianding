@@ -18,6 +18,7 @@ import {
   closeHoldingDialog,
   hydrate,
   hydrateTradingLedger,
+  openAlertDialog,
   refreshAll,
   startPolling,
   startWindowSync,
@@ -42,9 +43,26 @@ watchEffect(() => {
 });
 
 function onKeydown(event: KeyboardEvent) {
+  const target = event.target as HTMLElement | null;
+  const typing =
+    target?.tagName === "INPUT" ||
+    target?.tagName === "TEXTAREA" ||
+    target?.tagName === "SELECT" ||
+    target?.isContentEditable;
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();
     state.searchOpen = !state.searchOpen;
+    return;
+  }
+  const overlayOpen = state.searchOpen || state.holdingDialog.open || state.alertDialog.open;
+  if (!typing && !overlayOpen && !event.metaKey && !event.ctrlKey && !event.altKey && event.key === "/") {
+    event.preventDefault();
+    state.searchOpen = true;
+    return;
+  }
+  if (!typing && !overlayOpen && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "n") {
+    event.preventDefault();
+    openAlertDialog(state.selectedSymbol);
     return;
   }
   if (event.key === "Escape") {

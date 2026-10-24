@@ -7,3 +7,5 @@ output/playwright
 .DS_Store
 work
 *.log
+server/data
+server/.env
