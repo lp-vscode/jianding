@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { Activity, BellPlus, BellRing, CheckCheck, Copy, Inbox, Pencil, Plus, Trash2, Zap } from "lucide-vue-next";
 import type { AlertRule } from "../types";
 import {
@@ -14,49 +14,39 @@ import {
 } from "../lib/store";
 import { alertConditions, alertRuleSummary, isTriggered } from "../lib/alerts";
 import { formatCompactMoney, formatPercent, formatPrice, priceDigits, timeAgo } from "../lib/format";
+import { getAlertDayStats, groupAlertEvents, type AlertEventGroup } from "../lib/event-summary";
 
 const pendingDelete = ref<string | null>(null);
+const eventButtons = new Map<string, HTMLDivElement>();
 let deleteTimer: number | undefined;
 
-onBeforeUnmount(() => window.clearTimeout(deleteTimer));
+onBeforeUnmount(() => {
+  window.clearTimeout(deleteTimer);
+  window.removeEventListener("keydown", onShortcut);
+});
 
 const activeCount = computed(() => state.alerts.filter((rule) => rule.enabled).length);
 const unreadCount = computed(() => state.events.filter((event) => !event.read).length);
+const eventGroups = computed(() => groupAlertEvents(state.events));
+const dayStats = computed(() => getAlertDayStats(state.events, eventGroups.value));
 const todayEvents = computed(() => {
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   return state.events.filter((event) => event.at >= start.getTime());
 });
-const todayCount = computed(() => {
-  return todayEvents.value.length;
-});
-const todayUnreadCount = computed(() => todayEvents.value.filter((event) => !event.read).length);
-const todayProcessedCount = computed(() => todayCount.value - todayUnreadCount.value);
-const eventGroups = computed(() => {
-  const groups: Array<{ key: string; symbol: string; latest: (typeof state.events)[number]; count: number }> = [];
-  for (const event of state.events) {
-    const current = groups.find(
-      (group) =>
-        group.symbol === event.symbol &&
-        Math.abs(group.latest.at - event.at) <= 5 * 60 * 1000,
-    );
-    if (current) current.count += 1;
-    else groups.push({ key: event.id, symbol: event.symbol, latest: event, count: 1 });
-  }
-  return groups;
-});
-const todayGroupCount = computed(() => {
-  const todayIds = new Set(todayEvents.value.map((event) => event.id));
-  return eventGroups.value.filter((group) => todayIds.has(group.latest.id)).length;
-});
-const mostActiveSymbol = computed(() => {
-  const counts = new Map<string, number>();
-  for (const event of todayEvents.value) counts.set(event.symbol, (counts.get(event.symbol) ?? 0) + 1);
-  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-});
+const todayCount = computed(() => dayStats.value.total);
+const todayUnreadCount = computed(() => dayStats.value.unread);
+const todayProcessedCount = computed(() => dayStats.value.processed);
+const todayGroupCount = computed(() => dayStats.value.groupCount);
+const mostActiveSymbol = computed(() => dayStats.value.mostActive?.symbol ?? null);
 const healthState = computed(() => {
   if (!todayCount.value) return { label: "今日安静", detail: "暂无规则触发，保持轻量监控" };
-  if (todayUnreadCount.value) return { label: "待处理", detail: `${todayUnreadCount.value} 条触发尚未处理` };
+  if (todayUnreadCount.value) {
+    return {
+      label: "待处理",
+      detail: `${todayUnreadCount.value} 条未处理，处理率 ${dayStats.value.processingRate.toFixed(0)}%`,
+    };
+  }
   return { label: "节奏平稳", detail: `${todayCount.value} 次触发已全部处理` };
 });
 
@@ -135,8 +125,73 @@ function requestDelete(id: string) {
   }, 4000);
 }
 
-function openEvent(symbol: string) {
-  selectAsset(symbol);
+function setEventButton(key: string, element: unknown) {
+  if (element instanceof HTMLDivElement) eventButtons.set(key, element);
+  else eventButtons.delete(key);
+}
+
+function markGroupRead(group: AlertEventGroup) {
+  markEventsRead(group.events.map((event) => event.id));
+}
+
+function openEvent(group: AlertEventGroup) {
+  markGroupRead(group);
+  selectAsset(group.symbol);
+}
+
+function moveEventFocus(index: number, step: -1 | 1) {
+  if (!eventGroups.value.length) return;
+  const next = (index + step + eventGroups.value.length) % eventGroups.value.length;
+  const group = eventGroups.value[next];
+  void nextTick(() => eventButtons.get(group.key)?.focus());
+}
+
+function onEventKeydown(event: KeyboardEvent, index: number, group: AlertEventGroup) {
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    moveEventFocus(index, event.key === "ArrowDown" ? 1 : -1);
+    return;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    openEvent(group);
+    return;
+  }
+  if (event.key.toLowerCase() === "m") {
+    event.preventDefault();
+    event.stopPropagation();
+    markGroupRead(group);
+    showToast("该事件组已标记为已读", "info");
+  }
+}
+
+function isTypingTarget(target: EventTarget | null) {
+  const element = target as HTMLElement | null;
+  return (
+    element?.tagName === "INPUT" ||
+    element?.tagName === "TEXTAREA" ||
+    element?.tagName === "SELECT" ||
+    element?.isContentEditable
+  );
+}
+
+function onShortcut(event: KeyboardEvent) {
+  if (isTypingTarget(event.target) || state.view !== "alerts") return;
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.key.toLowerCase() === "m") {
+    event.preventDefault();
+    markEventsRead();
+    showToast("今日触发已全部标记为已读", "success");
+    return;
+  }
+  if (event.key.toLowerCase() === "c") {
+    event.preventDefault();
+    void copyDailyReview();
+    return;
+  }
+  if (event.key === "Escape" && event.target instanceof HTMLElement) {
+    event.target.blur();
+  }
 }
 
 async function copyDailyReview() {
@@ -157,6 +212,8 @@ async function copyDailyReview() {
     showToast("复制失败，请检查剪贴板权限", "error");
   }
 }
+
+onMounted(() => window.addEventListener("keydown", onShortcut));
 </script>
 
 <template>
@@ -334,18 +391,19 @@ async function copyDailyReview() {
 
         <div v-else class="event-list">
           <div
-            v-for="group in eventGroups"
+            v-for="(group, index) in eventGroups"
             :key="group.key"
+            :ref="(element) => setEventButton(group.key, element)"
             class="event-row"
-            :class="{ unread: !group.latest.read }"
+            :class="{ unread: group.unreadCount > 0 }"
             role="button"
             tabindex="0"
-            @click="openEvent(group.symbol)"
-            @keydown.enter="openEvent(group.symbol)"
+            @click="openEvent(group)"
+            @keydown="onEventKeydown($event, index, group)"
           >
             <i class="event-dot" />
             <div class="event-copy">
-              <p>{{ group.latest.message }}</p>
+              <p>{{ group.summary }}</p>
               <div class="event-snapshot">
                 <span>{{ formatPrice(group.latest.price, priceDigits(state.assets.find((asset) => asset.symbol === group.symbol)?.kind ?? "stock", group.latest.price)) }}</span>
                 <span v-if="group.latest.changePct != null" :class="group.latest.changePct >= 0 ? 'up' : 'down'">
@@ -356,7 +414,8 @@ async function copyDailyReview() {
               </div>
               <small>
                 {{ timeAgo(group.latest.at) }} · {{ group.latest.name }}
-                <template v-if="group.count > 1"> · 5 分钟内合并 {{ group.count }} 次</template>
+                <template v-if="group.count > 1"> · 合并 {{ group.count }} 次</template>
+                <template v-if="group.unreadCount"> · {{ group.unreadCount }} 条未读</template>
               </small>
             </div>
           </div>

@@ -1147,9 +1147,15 @@ export function deleteAlert(id: string) {
   }
 }
 
-export function markEventsRead() {
-  for (const event of state.events) event.read = true;
-  scheduleSave();
+export function markEventsRead(ids?: string[]) {
+  const selected = ids ? new Set(ids) : null;
+  let changed = false;
+  for (const event of state.events) {
+    if (event.read || (selected && !selected.has(event.id))) continue;
+    event.read = true;
+    changed = true;
+  }
+  if (changed) scheduleSave();
 }
 
 export function addHolding(input: { symbol: string; shares: number; cost: number; note: string }) {

@@ -315,6 +315,14 @@ onBeforeUnmount(() => window.clearTimeout(resetTimer));
             <kbd>N</kbd>
           </div>
           <div class="shortcut-row">
+            <span><BellRing :size="11" /> 告警全部已读</span>
+            <kbd>M</kbd>
+          </div>
+          <div class="shortcut-row">
+            <span><Copy :size="11" /> 复制今日复盘</span>
+            <kbd>C</kbd>
+          </div>
+          <div class="shortcut-row">
             <span><Keyboard :size="11" /> 分组与更多</span>
             <kbd>G</kbd>
           </div>
