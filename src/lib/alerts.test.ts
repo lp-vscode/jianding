@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { AlertRule, Quote, TrendPoint } from "../types";
-import { alertRuleSummary, isConditionTriggered, isTriggered } from "./alerts";
+import {
+  alertRuleSummary,
+  isConditionTriggered,
+  isTriggered,
+  priceAlertLevels,
+  visiblePriceAlertLevels,
+} from "./alerts";
 
 function quote(patch: Partial<Quote> = {}): Quote {
   return {
@@ -100,5 +106,52 @@ describe("alert conditions", () => {
         { trend: points },
       ),
     ).toBe(true);
+  });
+
+  it("extracts enabled price conditions for chart overlays", () => {
+    const rules = [
+      rule({
+        id: "active",
+        conditions: [
+          { type: "priceAbove", threshold: 1290 },
+          { type: "amountAbove", threshold: 10 },
+        ],
+        logic: "all",
+      }),
+      rule({
+        id: "paused",
+        type: "priceBelow",
+        threshold: 1200,
+        enabled: false,
+      }),
+    ];
+
+    expect(priceAlertLevels(rules, quote())).toEqual([
+      {
+        id: "active:0",
+        ruleId: "active",
+        threshold: 1290,
+        tone: "up",
+        label: "涨破",
+        triggered: true,
+      },
+    ]);
+  });
+
+  it("keeps chart levels within a useful range and removes duplicates", () => {
+    const levels = priceAlertLevels(
+      [
+        rule({ id: "one", threshold: 25 }),
+        rule({ id: "two", threshold: 25 }),
+        rule({ id: "three", threshold: 40 }),
+      ],
+      quote(),
+    );
+    const points: TrendPoint[] = [10, 15, 20].map((value, index) => ({
+      label: String(index),
+      value,
+    }));
+
+    expect(visiblePriceAlertLevels(points, levels).map((level) => level.threshold)).toEqual([25]);
   });
 });

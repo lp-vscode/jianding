@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import type { TrendPoint } from "../types";
+import { visiblePriceAlertLevels, type PriceAlertLevel } from "../lib/alerts";
 import { formatPrice } from "../lib/format";
 
 const props = withDefaults(
@@ -10,8 +11,9 @@ const props = withDefaults(
     tone?: "up" | "down" | "flat";
     digits?: number;
     label?: string;
+    levels?: PriceAlertLevel[];
   }>(),
-  { loading: false, tone: "flat", digits: 2, label: "价格走势" },
+  { loading: false, tone: "flat", digits: 2, label: "价格走势", levels: () => [] },
 );
 
 const wrap = ref<HTMLDivElement | null>(null);
@@ -34,6 +36,9 @@ onMounted(() => {
 onBeforeUnmount(() => observer?.disconnect());
 
 const values = computed(() => props.points.map((point) => point.value));
+
+const chartLevels = computed(() => visiblePriceAlertLevels(props.points, props.levels));
+
 const bounds = computed(() => {
   if (!values.value.length) return { min: 0, max: 1 };
   let min = Math.min(...values.value);
@@ -56,6 +61,28 @@ function yFor(value: number) {
   const usable = height - pad.top - pad.bottom;
   const ratio = (value - bounds.value.min) / (bounds.value.max - bounds.value.min || 1);
   return pad.top + (1 - ratio) * usable;
+}
+
+function levelTone(level: PriceAlertLevel) {
+  return level.tone === "up" ? "var(--trend-up)" : "var(--trend-down)";
+}
+
+function levelGeometry(level: PriceAlertLevel) {
+  const rawY = yFor(level.threshold);
+  if (rawY < pad.top) {
+    return { y: pad.top, labelY: pad.top + 11 };
+  }
+  if (rawY > height - pad.bottom) {
+    return { y: height - pad.bottom, labelY: height - pad.bottom - 6 };
+  }
+  return { y: rawY, labelY: rawY - 5 };
+}
+
+function levelLabel(level: PriceAlertLevel) {
+  const rawY = yFor(level.threshold);
+  const location =
+    rawY < pad.top ? " · 区间上方" : rawY > height - pad.bottom ? " · 区间下方" : "";
+  return `${level.label} ${formatPrice(level.threshold, props.digits)}${location}`;
 }
 
 const linePath = computed(() => {
@@ -147,7 +174,7 @@ const gradientId = `trend-${Math.random().toString(36).slice(2, 8)}`;
       :width="width"
       :height="height"
       role="img"
-      :aria-label="label"
+      :aria-label="`${label}${chartLevels.length ? `，包含 ${chartLevels.length} 条价格提醒线` : ''}`"
       @mousemove="onMove"
       @mouseleave="hover = null"
     >
@@ -177,6 +204,23 @@ const gradientId = `trend-${Math.random().toString(36).slice(2, 8)}`;
         </text>
       </g>
       <path :d="areaPath" :fill="`url(#${gradientId})`" class="chart-area" />
+      <g
+        v-for="level in chartLevels"
+        :key="level.id"
+        class="chart-level"
+        :class="{ triggered: level.triggered }"
+        :style="{ '--level-color': levelTone(level) }"
+      >
+        <line
+          :x1="pad.left"
+          :x2="width - pad.right"
+          :y1="levelGeometry(level).y"
+          :y2="levelGeometry(level).y"
+        />
+        <text :x="pad.left + 5" :y="levelGeometry(level).labelY">
+          {{ levelLabel(level) }}
+        </text>
+      </g>
       <path :d="linePath" class="chart-line" />
       <g class="chart-x">
         <text v-for="tick in xTicks" :key="`${tick.x}-${tick.label}`" :x="tick.x" :y="height - 7" class="chart-axis">

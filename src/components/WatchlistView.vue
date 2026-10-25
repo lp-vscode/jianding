@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import {
   BellPlus,
+  BellRing,
   Check,
   FolderPlus,
   Pencil,
@@ -39,7 +40,14 @@ import {
   priceDigits,
   toneOf,
 } from "../lib/format";
-import { alertConditions, alertRuleSummary, isTriggered } from "../lib/alerts";
+import {
+  alertConditions,
+  alertRuleSummary,
+  isTriggered,
+  priceAlertLevels,
+  visiblePriceAlertLevels,
+  type PriceAlertLevel,
+} from "../lib/alerts";
 import { isDataDelayed } from "../lib/market";
 import TrendChart from "./TrendChart.vue";
 
@@ -77,6 +85,7 @@ const healthTimer = window.setInterval(() => {
 
 const sortOptions: { value: WatchlistSort; label: string }[] = [
   { value: "default", label: "默认顺序" },
+  { value: "alertFirst", label: "提醒优先" },
   { value: "changeDesc", label: "涨幅优先" },
   { value: "changeAsc", label: "跌幅优先" },
   { value: "priceDesc", label: "价格从高到低" },
@@ -121,6 +130,13 @@ const visibleAssets = computed(() => {
   };
   const sorted = [...assets];
   sorted.sort((a, b) => {
+    if (state.settings.watchlistSort === "alertFirst") {
+      const priority = (symbol: string) => {
+        const alert = rowAlertState(symbol);
+        return alert.unreadCount * 100 + alert.triggeredCount * 10 + (alert.ruleCount ? 1 : 0);
+      };
+      return priority(b.symbol) - priority(a.symbol);
+    }
     if (state.settings.watchlistSort === "changeDesc") return metric(b.symbol, "changePct") - metric(a.symbol, "changePct");
     if (state.settings.watchlistSort === "changeAsc") return metric(a.symbol, "changePct") - metric(b.symbol, "changePct");
     if (state.settings.watchlistSort === "priceDesc") return metric(b.symbol, "price") - metric(a.symbol, "price");
@@ -144,8 +160,46 @@ const inWatchlist = computed(
 const relatedAlerts = computed(() =>
   detailAsset.value ? state.alerts.filter((alert) => alert.symbol === detailAsset.value?.symbol) : [],
 );
+const rowAlertStates = computed(() => {
+  const summaries = new Map<
+    string,
+    { ruleCount: number; triggeredCount: number; unreadCount: number }
+  >();
+  for (const symbol of state.watchlist) {
+    const rules = state.alerts.filter((rule) => rule.symbol === symbol && rule.enabled);
+    summaries.set(symbol, {
+      ruleCount: rules.length,
+      triggeredCount: rules.filter((rule) => isTriggered(rule, quoteFor(symbol))).length,
+      unreadCount: state.events.filter((event) => event.symbol === symbol && !event.read).length,
+    });
+  }
+  return summaries;
+});
+const chartLevels = computed(() => priceAlertLevels(relatedAlerts.value, quote.value));
+const visibleChartLevels = computed(() =>
+  visiblePriceAlertLevels(trend.value, chartLevels.value),
+);
+const hiddenChartLevelCount = computed(() => Math.max(0, chartLevels.value.length - visibleChartLevels.value.length));
 const quickAsset = computed(() => (quickSymbol.value ? watchlistAssets.value.find((asset) => asset.symbol === quickSymbol.value) : null));
 const rangeLoading = computed(() => trendLoading.value && !trend.value.length);
+
+function rowAlertState(symbol: string) {
+  return rowAlertStates.value.get(symbol) ?? { ruleCount: 0, triggeredCount: 0, unreadCount: 0 };
+}
+
+function rowAlertLabel(symbol: string) {
+  const summary = rowAlertState(symbol);
+  if (!summary.ruleCount) return "";
+  const triggered =
+    summary.triggeredCount > 0 ? `，${summary.triggeredCount} 条当前满足条件` : "";
+  const unread = summary.unreadCount > 0 ? `，${summary.unreadCount} 条未读触发` : "";
+  return `${summary.ruleCount} 条提醒${triggered}${unread}`;
+}
+
+function openChartLevel(level: PriceAlertLevel) {
+  const rule = state.alerts.find((item) => item.id === level.ruleId);
+  if (rule) openAlertDialog(rule.symbol, rule);
+}
 
 const stats = computed(() => {
   const asset = detailAsset.value;
@@ -558,7 +612,26 @@ onBeforeUnmount(() => {
               </span>
               <span class="row-meta">
                 <span class="mono">{{ asset.code }}</span>
-                <span>{{ stateLabel(asset.symbol) }}</span>
+                <span class="row-state-label">{{ stateLabel(asset.symbol) }}</span>
+                <span
+                  v-if="rowAlertState(asset.symbol).ruleCount"
+                  class="row-alert-status"
+                  :class="{
+                    hot: rowAlertState(asset.symbol).triggeredCount > 0,
+                    unread: rowAlertState(asset.symbol).unreadCount > 0,
+                  }"
+                  :title="rowAlertLabel(asset.symbol)"
+                  :aria-label="rowAlertLabel(asset.symbol)"
+                  role="status"
+                >
+                  <BellRing :size="10" aria-hidden="true" />
+                  <span aria-hidden="true">
+                    {{
+                      rowAlertState(asset.symbol).unreadCount ||
+                      rowAlertState(asset.symbol).ruleCount
+                    }}
+                  </span>
+                </span>
               </span>
             </span>
             <span class="row-price">
@@ -680,6 +753,28 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </div>
+          <div
+            v-if="!showChartTable && visibleChartLevels.length"
+            class="chart-level-legend"
+            aria-label="图表中的价格提醒"
+          >
+            <button
+              v-for="level in visibleChartLevels"
+              :key="level.id"
+              class="chart-level-chip"
+              :class="[`is-${level.tone}`, { triggered: level.triggered }]"
+              type="button"
+              :aria-label="`${level.label} ${formatPrice(level.threshold, digits)}，${level.triggered ? '当前已满足条件' : '监控中'}，点击编辑提醒`"
+              @click="openChartLevel(level)"
+            >
+              <i aria-hidden="true" />
+              <span>{{ level.label }}</span>
+              <strong class="mono">{{ formatPrice(level.threshold, digits) }}</strong>
+            </button>
+            <span v-if="hiddenChartLevelCount" class="chart-level-more">
+              另有 {{ hiddenChartLevelCount }} 条
+            </span>
+          </div>
           <TrendChart
             v-if="!showChartTable"
             :points="trend"
@@ -687,6 +782,7 @@ onBeforeUnmount(() => {
             :tone="chartTone"
             :digits="digits"
             :label="`${detailAsset.name} ${chartSummary}`"
+            :levels="visibleChartLevels"
           />
           <div v-else class="chart-table-shell">
             <div v-if="rangeLoading" class="chart-table-empty">正在加载{{ rangeLabel }}数据…</div>

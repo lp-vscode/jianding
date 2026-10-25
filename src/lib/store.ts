@@ -329,7 +329,7 @@ function sanitizePersisted(raw: unknown): PersistedState | null {
       source.settings?.watchlistDensity === "compact" || source.settings?.watchlistDensity === "comfortable"
         ? source.settings.watchlistDensity
         : DEFAULT_SETTINGS.watchlistDensity,
-    watchlistSort: (["default", "changeDesc", "changeAsc", "priceDesc", "priceAsc", "volumeDesc"] as const).includes(
+    watchlistSort: (["default", "alertFirst", "changeDesc", "changeAsc", "priceDesc", "priceAsc", "volumeDesc"] as const).includes(
       source.settings?.watchlistSort as Settings["watchlistSort"],
     )
       ? (source.settings?.watchlistSort as Settings["watchlistSort"])

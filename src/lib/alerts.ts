@@ -18,6 +18,60 @@ export const ALERT_SHORT_LABELS: Record<AlertType, string> = {
   pnlBelow: "持仓亏损",
 };
 
+export interface PriceAlertLevel {
+  id: string;
+  ruleId: string;
+  threshold: number;
+  tone: "up" | "down";
+  label: string;
+  triggered: boolean;
+}
+
+export function priceAlertLevels(
+  rules: AlertRule[],
+  quote: Quote | undefined,
+): PriceAlertLevel[] {
+  return rules.flatMap((rule) => {
+    if (!rule.enabled) return [];
+    return alertConditions(rule).flatMap((condition, index) => {
+      if (condition.type !== "priceAbove" && condition.type !== "priceBelow") return [];
+      return [
+        {
+          id: `${rule.id}:${index}`,
+          ruleId: rule.id,
+          threshold: condition.threshold,
+          tone: condition.type === "priceAbove" ? ("up" as const) : ("down" as const),
+          label: ALERT_SHORT_LABELS[condition.type],
+          triggered: quote ? isConditionTriggered(condition, quote) : false,
+        },
+      ];
+    });
+  });
+}
+
+export function visiblePriceAlertLevels(
+  points: TrendPoint[],
+  levels: PriceAlertLevel[],
+  maxLevels = 3,
+) {
+  if (!points.length || !levels.length) return [];
+  const values = points.map((point) => point.value);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const dataRange = max - min;
+  const margin = Math.max(0.0001, dataRange * 1.15, Math.abs(max) * 0.005);
+  const seen = new Set<number>();
+  return levels
+    .filter((level) => level.threshold >= min - margin && level.threshold <= max + margin)
+    .filter((level) => {
+      const key = Number(level.threshold.toFixed(6));
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, maxLevels);
+}
+
 export function alertThresholdText(
   condition: Pick<AlertCondition, "type" | "threshold" | "period" | "secondaryPeriod">,
 ) {

@@ -5,7 +5,14 @@ export type QuoteState = "live" | "nav" | "demo";
 export type TrendRange = "intraday" | "5d" | "day" | "week" | "month" | "1m" | "3m" | "1y";
 export type GainLossMode = "china" | "accessible";
 export type WatchlistDensity = "comfortable" | "compact";
-export type WatchlistSort = "default" | "changeDesc" | "changeAsc" | "priceDesc" | "priceAsc" | "volumeDesc";
+export type WatchlistSort =
+  | "default"
+  | "alertFirst"
+  | "changeDesc"
+  | "changeAsc"
+  | "priceDesc"
+  | "priceAsc"
+  | "volumeDesc";
 
 export interface Asset {
   symbol: string;
