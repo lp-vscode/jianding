@@ -8,6 +8,7 @@ import {
   matchPendingTradingOrders,
   riskExitForPosition,
   runSmaBacktest,
+  sanitizeTradingLedger,
   submitTradingOrder,
 } from "./trading";
 
@@ -144,6 +145,27 @@ describe("trading analytics and signals", () => {
     expect(result.equityCurve).toHaveLength(values.length);
     expect(result.tradeCount).toBeGreaterThan(0);
     expect(result.finalEquity).toBeGreaterThan(0);
+  });
+
+  it("preserves saved backtest versions when restoring the ledger", () => {
+    const ledger = defaultTradingLedger(1, asset.symbol);
+    const result = runSmaBacktest(
+      [10, 10, 11, 12, 11, 13, 14].map((value, index) => ({
+        label: String(index),
+        value,
+      })),
+      ledger.strategy,
+      asset,
+      ledger.risk,
+      100_000,
+    );
+    ledger.backtest = result;
+    ledger.backtestHistory = [result];
+
+    const restored = sanitizeTradingLedger(ledger, asset.symbol);
+    expect(restored.backtest?.id).toBe(result.id);
+    expect(restored.backtestHistory).toHaveLength(1);
+    expect(restored.backtestHistory[0].equityCurve).toEqual(result.equityCurve);
   });
 
   it("blocks automated execution before a backtest exists", () => {

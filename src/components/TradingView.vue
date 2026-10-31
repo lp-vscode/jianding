@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref } from "vue";
 import {
   Activity,
+  AlertTriangle,
   Bot,
+  CircleCheck,
   CircleDollarSign,
   Database,
   FlaskConical,
   Gauge,
+  History,
   Play,
   RotateCcw,
   Send,
   ShieldCheck,
+  SlidersHorizontal,
   TrendingDown,
   TrendingUp,
   Wallet,
@@ -34,6 +38,7 @@ import {
   calculateTradingStats,
   suggestedTradingQuantity,
 } from "../lib/trading";
+import { buildOrderPreflight } from "../lib/order-preflight";
 import {
   directionMark,
   formatMoney,
@@ -44,11 +49,19 @@ import {
   priceDigits,
   toneOf,
 } from "../lib/format";
+import PositionValueToggle from "./PositionValueToggle.vue";
+import StrategyBlueprints from "./StrategyBlueprints.vue";
+import BacktestHistoryDialog from "./BacktestHistoryDialog.vue";
+import StrategySensitivityDialog from "./StrategySensitivityDialog.vue";
 import TrendChart from "./TrendChart.vue";
 
 const strategyRunning = ref(false);
 const backtestRunning = ref(false);
 const resetArmed = ref(false);
+const historyOpen = ref(false);
+const historyTrigger = ref<HTMLButtonElement | null>(null);
+const sensitivityOpen = ref(false);
+const sensitivityTrigger = ref<HTMLButtonElement | null>(null);
 let resetTimer: number | undefined;
 
 const orderSymbol = ref(state.trading.strategy.symbol || watchlistAssets.value[0]?.symbol || "");
@@ -103,12 +116,33 @@ const equityPoints = computed<TrendPoint[]>(() => {
 });
 const equityTone = computed(() => toneOf(stats.value.totalPnl));
 const equityDigits = computed(() => (stats.value.equity < 10 ? 4 : 2));
-const estimatedOrder = computed(() => {
-  const quantity = Number(orderQuantity.value);
-  const price =
-    orderType.value === "limit" ? Number(limitPrice.value) : orderQuote.value?.price;
-  if (!Number.isFinite(quantity) || !Number.isFinite(price ?? NaN) || quantity <= 0 || !price) return null;
-  return quantity * price;
+const orderPreflight = computed(() => {
+  if (!orderAsset.value) return null;
+  return buildOrderPreflight({
+    asset: orderAsset.value,
+    quote: orderQuote.value,
+    side: orderSide.value,
+    type: orderType.value,
+    quantity: Number(orderQuantity.value),
+    limitPrice: orderType.value === "limit" ? Number(limitPrice.value) : null,
+    ledger: state.trading,
+    stats: stats.value,
+  });
+});
+const hasOrderInput = computed(() => Number(orderQuantity.value) > 0);
+const estimatedOrder = computed(() => orderPreflight.value?.gross || null);
+const orderPreflightTone = computed(() => {
+  if (!hasOrderInput.value) return "idle";
+  if (!orderPreflight.value?.canSubmit) return "blocked";
+  return orderPreflight.value.notes.some((note) => note.tone === "warning")
+    ? "warning"
+    : "ready";
+});
+const orderPreflightLabel = computed(() => {
+  if (!hasOrderInput.value) return "等待数量";
+  if (!orderPreflight.value?.canSubmit) return "需要调整";
+  if (orderPreflight.value.notes.some((note) => note.tone === "warning")) return "可提交 · 留意提示";
+  return "检查通过";
 });
 const maxBuyQuantity = computed(() =>
   orderAsset.value && orderQuote.value?.price
@@ -124,6 +158,16 @@ const backtestPoints = computed<TrendPoint[]>(() =>
     value: point.value,
   })),
 );
+const backtestVersions = computed(() => {
+  const versions = new Map<string, (typeof state.trading.backtestHistory)[number]>();
+  if (state.trading.backtest?.symbol === state.trading.strategy.symbol) {
+    versions.set(state.trading.backtest.id, state.trading.backtest);
+  }
+  for (const version of state.trading.backtestHistory) {
+    if (version.symbol === state.trading.strategy.symbol) versions.set(version.id, version);
+  }
+  return [...versions.values()].sort((left, right) => right.ranAt - left.ranAt);
+});
 const backtestTone = computed(() => toneOf(state.trading.backtest?.totalReturn));
 const pipeline = computed(() => [
   { key: "data", label: "数据", icon: Database, status: state.lastUpdated ? "就绪" : "同步中", ready: Boolean(state.lastUpdated) },
@@ -139,6 +183,14 @@ const pipeline = computed(() => [
   { key: "execution", label: "执行", icon: Send, status: state.trading.strategy.enabled ? "自动" : "手动", ready: state.trading.strategy.enabled },
   { key: "agent", label: "智能体", icon: Bot, status: state.trading.strategy.agentEnabled ? "在线" : "关闭", ready: state.trading.strategy.agentEnabled },
 ]);
+const pipelineReadyCount = computed(() => pipeline.value.filter((stage) => stage.ready).length);
+const strategyStatusLabel = computed(() =>
+  state.trading.strategy.enabled ? "自动执行" : "手动执行",
+);
+const positionValuesHidden = computed(() => state.settings.hidePositionValues);
+const nextPipelineStage = computed(() =>
+  pipeline.value.find((stage) => !stage.ready) ?? pipeline.value[pipeline.value.length - 1],
+);
 
 function formatWindowTitle(shortWindow: number, longWindow: number) {
   return `SMA ${shortWindow} / ${longWindow}`;
@@ -244,11 +296,29 @@ function requestReset() {
   }, 4000);
 }
 
+function openBacktestHistory() {
+  historyOpen.value = true;
+}
+
+function closeBacktestHistory() {
+  historyOpen.value = false;
+  void nextTick(() => historyTrigger.value?.focus());
+}
+
+function openSensitivity() {
+  sensitivityOpen.value = true;
+}
+
+function closeSensitivity() {
+  sensitivityOpen.value = false;
+  void nextTick(() => sensitivityTrigger.value?.focus());
+}
+
 onBeforeUnmount(() => window.clearTimeout(resetTimer));
 </script>
 
 <template>
-  <section class="trading-view">
+  <section class="trading-view view-page view-trading">
     <div class="view-head">
       <div>
         <p class="eyebrow">Paper Trading</p>
@@ -262,78 +332,97 @@ onBeforeUnmount(() => window.clearTimeout(resetTimer));
         </p>
       </div>
       <div class="view-actions">
-        <button class="btn" :class="{ 'btn-danger': resetArmed }" type="button" @click="requestReset">
+        <button class="btn btn-small btn-ghost" :class="{ 'btn-danger': resetArmed }" type="button" @click="requestReset">
           <RotateCcw :size="14" />
           {{ resetArmed ? "再次点击重置" : "重置模拟账户" }}
         </button>
       </div>
     </div>
 
-    <div class="panel quant-pipeline" aria-label="量化系统六层链路">
-      <div v-for="(stage, index) in pipeline" :key="stage.key" class="pipeline-stage" :class="{ ready: stage.ready }">
+    <div class="panel workspace-signal trading-signal">
+      <div class="workspace-signal-meta">
+        <span>{{ pipelineReadyCount }} / {{ pipeline.length }} 层链路就绪</span>
+        <span class="workspace-signal-status"><i aria-hidden="true" />{{ strategyStatusLabel }}</span>
+      </div>
+
+      <div class="workspace-signal-board">
+        <div class="workspace-signal-core">
+          <div class="workspace-signal-core-head">
+            <span>模拟权益</span>
+            <small>{{ state.trading.strategy.enabled ? "策略运行中" : "本地模拟账户" }}</small>
+          </div>
+          <strong>¥{{ formatMoney(stats.equity) }}</strong>
+          <div class="workspace-signal-core-foot">
+            <span :class="toneOf(stats.totalPnl)">
+              {{ formatSigned(stats.totalPnl) }}
+              · {{ formatPercent(stats.totalReturn) }}
+              {{ directionMark(stats.totalReturn) }}
+            </span>
+            <span>今日 {{ formatSigned(stats.todayPnl) }}</span>
+          </div>
+        </div>
+
+        <div class="workspace-signal-side">
+          <div class="workspace-signal-mini">
+            <span>可用资金</span>
+            <strong>¥{{ formatMoney(state.trading.cash) }}</strong>
+            <small>初始 ¥{{ formatMoney(state.trading.initialCapital, 0) }}</small>
+          </div>
+          <div class="workspace-signal-mini">
+            <span>最大回撤</span>
+            <strong>{{ stats.maxDrawdown.toFixed(2) }}%</strong>
+            <small>{{ state.trading.backtest?.riskPassed ? "风控已通过" : "待回测确认" }}</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="workspace-signal-facts">
+        <span>持仓市值</span>
+        <strong :aria-label="positionValuesHidden ? '持仓市值已隐藏' : undefined">
+          {{ positionValuesHidden ? "••••" : `¥${formatMoney(stats.marketValue)}` }}
+        </strong>
+        <i aria-hidden="true" />
+        <span>胜率</span>
+        <strong>{{ stats.winRate == null ? "--" : `${stats.winRate.toFixed(1)}%` }}</strong>
+        <i aria-hidden="true" />
+        <span>累计费用</span>
+        <strong>¥{{ formatMoney(stats.fees) }}</strong>
+      </div>
+
+      <button
+        class="workspace-signal-action"
+        type="button"
+        :disabled="strategyRunning"
+        :aria-busy="strategyRunning"
+        @click="runStrategy"
+      >
+        <span class="workspace-signal-action-icon" aria-hidden="true"><Play :size="17" /></span>
+        <span>
+          <strong>{{ strategyRunning ? "正在评估策略" : "立即评估当前策略" }}</strong>
+          <small>{{ state.trading.strategy.lastReason }}</small>
+        </span>
+        <span class="workspace-signal-action-cta">{{ strategyRunning ? "计算中" : "运行策略" }}</span>
+      </button>
+    </div>
+
+    <div
+      class="panel quant-pipeline"
+      :class="{ running: strategyRunning || backtestRunning }"
+      :aria-busy="strategyRunning || backtestRunning"
+      :aria-label="`量化系统六层链路，下一步${nextPipelineStage.label}`"
+    >
+      <div
+        v-for="(stage, index) in pipeline"
+        :key="stage.key"
+        class="pipeline-stage"
+        :class="{ ready: stage.ready, next: stage.key === nextPipelineStage.key }"
+      >
         <span class="pipeline-icon"><component :is="stage.icon" :size="14" /></span>
         <span>
           <strong>{{ stage.label }}</strong>
           <small>{{ stage.status }}</small>
         </span>
         <i v-if="index < pipeline.length - 1" aria-hidden="true">→</i>
-      </div>
-    </div>
-
-    <div class="panel trading-hero">
-      <div class="trading-account">
-        <p class="eyebrow">模拟权益</p>
-        <strong class="trading-equity">¥{{ formatMoney(stats.equity) }}</strong>
-        <div class="trading-account-meta">
-          <span :class="toneOf(stats.totalPnl)">
-            {{ formatSigned(stats.totalPnl) }}
-            （{{ formatPercent(stats.totalReturn) }} {{ directionMark(stats.totalReturn) }}）
-          </span>
-          <span>初始资金 ¥{{ formatMoney(state.trading.initialCapital, 0) }}</span>
-        </div>
-      </div>
-      <div class="trading-hero-metrics">
-        <div>
-          <span>可用资金</span>
-          <strong>¥{{ formatMoney(state.trading.cash) }}</strong>
-        </div>
-        <div>
-          <span>持仓市值</span>
-          <strong>¥{{ formatMoney(stats.marketValue) }}</strong>
-        </div>
-        <div>
-          <span>浮动盈亏</span>
-          <strong :class="toneOf(stats.unrealizedPnl)">{{ formatSigned(stats.unrealizedPnl) }}</strong>
-        </div>
-        <div>
-          <span>已实现盈亏</span>
-          <strong :class="toneOf(stats.realizedPnl)">{{ formatSigned(stats.realizedPnl) }}</strong>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel trading-stat-strip">
-      <div>
-        <span>今日盈亏</span>
-        <strong :class="toneOf(stats.todayPnl)">{{ formatSigned(stats.todayPnl) }}</strong>
-      </div>
-      <div>
-        <span>最大回撤</span>
-        <strong>{{ stats.maxDrawdown.toFixed(2) }}%</strong>
-      </div>
-      <div>
-        <span>胜率</span>
-        <strong>{{ stats.winRate == null ? "--" : `${stats.winRate.toFixed(1)}%` }}</strong>
-      </div>
-      <div>
-        <span>盈亏比</span>
-        <strong>
-          {{ stats.profitFactor == null ? "--" : Number.isFinite(stats.profitFactor) ? stats.profitFactor.toFixed(2) : "∞" }}
-        </strong>
-      </div>
-      <div>
-        <span>累计费用</span>
-        <strong>¥{{ formatMoney(stats.fees) }}</strong>
       </div>
     </div>
 
@@ -371,6 +460,7 @@ onBeforeUnmount(() => window.clearTimeout(resetTimer));
             </span>
           </div>
         </div>
+        <StrategyBlueprints :disabled="strategyRunning" />
         <div class="strategy-body">
           <div class="strategy-summary">
             <span class="strategy-badge" :class="strategyTone">
@@ -505,10 +595,49 @@ onBeforeUnmount(() => window.clearTimeout(resetTimer));
             <small v-if="orderSide === 'buy'">可用 ¥{{ formatMoney(state.trading.cash) }}</small>
             <small v-else>可卖 {{ orderPosition?.quantity ?? 0 }} {{ orderAsset?.kind === "fund" ? "份" : "股" }}</small>
           </div>
+          <div class="order-preflight" :class="orderPreflightTone">
+            <div class="order-preflight-head">
+              <span>
+                <CircleCheck v-if="orderPreflightTone === 'ready'" :size="13" aria-hidden="true" />
+                <AlertTriangle v-else-if="orderPreflightTone !== 'idle'" :size="13" aria-hidden="true" />
+                <ShieldCheck v-else :size="13" aria-hidden="true" />
+                下单预检
+              </span>
+              <strong role="status" aria-live="polite">{{ orderPreflightLabel }}</strong>
+            </div>
+            <div v-if="hasOrderInput && orderPreflight" class="order-preflight-grid">
+              <div>
+                <span>预计手续费</span>
+                <strong>¥{{ formatMoney(orderPreflight.fee) }}</strong>
+              </div>
+              <div>
+                <span>成交后仓位</span>
+                <strong>{{ orderPreflight.projectedExposurePct.toFixed(1) }}%</strong>
+              </div>
+              <div>
+                <span>{{ orderSide === "buy" ? "成交后资金" : "成交后持仓" }}</span>
+                <strong>
+                  {{
+                    orderSide === "buy"
+                      ? `¥${formatMoney(Math.max(0, orderPreflight.cashAfter))}`
+                      : `${orderPreflight.positionAfter} ${orderAsset?.kind === "fund" ? "份" : "股"}`
+                  }}
+                </strong>
+              </div>
+            </div>
+            <p v-else class="order-preflight-hint">填写数量后检查资金、仓位和手续费。</p>
+            <ul v-if="hasOrderInput && orderPreflight?.notes.length" class="order-preflight-notes">
+              <li v-for="note in orderPreflight.notes" :key="`${note.tone}-${note.message}`" :class="note.tone">
+                <AlertTriangle v-if="note.tone !== 'info'" :size="11" aria-hidden="true" />
+                <span>{{ note.message }}</span>
+              </li>
+            </ul>
+            <small>预检按当前价与模拟费率估算，限额单按限价计算。</small>
+          </div>
           <button
             class="btn btn-gold order-submit"
             type="button"
-            :disabled="!orderQuote?.price"
+            :disabled="!orderQuote?.price || !orderPreflight?.canSubmit"
             @click="submitOrder"
           >
             <Send :size="14" />
@@ -525,10 +654,39 @@ onBeforeUnmount(() => window.clearTimeout(resetTimer));
             <h2>历史回测</h2>
             <p>使用近一年日线收盘价、当前均线窗口和费用模型，无未来数据</p>
           </div>
-          <button class="btn btn-small" type="button" :disabled="backtestRunning" @click="runBacktest">
-            <FlaskConical :size="12" />
-            {{ backtestRunning ? "回测中" : "运行回测" }}
-          </button>
+        </div>
+        <div class="backtest-research-bar">
+          <span>
+            <SlidersHorizontal :size="12" aria-hidden="true" />
+            研究工具
+          </span>
+          <div class="backtest-research-actions">
+            <button
+              ref="historyTrigger"
+              class="btn btn-small btn-ghost"
+              type="button"
+              :disabled="backtestVersions.length < 2"
+              :title="backtestVersions.length < 2 ? '至少保存两次回测后可对比' : '对比历史回测版本'"
+              @click="openBacktestHistory"
+            >
+              <History :size="12" />
+              版本 {{ backtestVersions.length }}
+            </button>
+            <button
+              ref="sensitivityTrigger"
+              class="btn btn-small btn-ghost"
+              type="button"
+              :disabled="!strategyAsset"
+              @click="openSensitivity"
+            >
+              <SlidersHorizontal :size="12" />
+              参数扫描
+            </button>
+            <button class="btn btn-small" type="button" :disabled="backtestRunning" @click="runBacktest">
+              <FlaskConical :size="12" />
+              {{ backtestRunning ? "回测中" : "运行回测" }}
+            </button>
+          </div>
         </div>
         <div v-if="!state.trading.backtest" class="empty backtest-empty">
           <FlaskConical :size="22" :stroke-width="1.5" />
@@ -633,10 +791,13 @@ onBeforeUnmount(() => window.clearTimeout(resetTimer));
           <h2>模拟持仓</h2>
           <p>按最新行情估算；平均成本已包含买入费用</p>
         </div>
-        <span class="chip">
-          <Wallet :size="11" />
-          {{ positions.length }} 个标的
-        </span>
+        <div class="panel-head-actions">
+          <PositionValueToggle />
+          <span class="chip">
+            <Wallet :size="11" />
+            {{ positions.length }} 个标的
+          </span>
+        </div>
       </div>
       <div v-if="!positions.length" class="empty trading-empty">
         <CircleDollarSign :size="22" :stroke-width="1.5" />
@@ -657,12 +818,12 @@ onBeforeUnmount(() => window.clearTimeout(resetTimer));
             <strong>{{ row.asset.name }}</strong>
             <small>{{ row.asset.code }} · {{ row.asset.typeLabel }}</small>
           </span>
-          <span class="align-right mono" data-label="数量">{{ row.quantity }}</span>
+          <span class="align-right mono" data-label="数量">{{ positionValuesHidden ? "••••" : row.quantity }}</span>
           <span class="align-right mono" data-label="均价">{{ formatPrice(row.averageCost, row.digits) }}</span>
           <span class="align-right mono" data-label="现价">{{ formatPrice(row.price, row.digits) }}</span>
-          <span class="align-right mono" data-label="市值">¥{{ formatMoney(row.value) }}</span>
-          <span class="align-right mono" data-label="浮动盈亏" :class="toneOf(row.pnl)">
-            {{ formatSigned(row.pnl) }}
+          <span class="align-right mono" data-label="市值">{{ positionValuesHidden ? "••••" : `¥${formatMoney(row.value)}` }}</span>
+          <span class="align-right mono" data-label="浮动盈亏" :class="positionValuesHidden ? undefined : toneOf(row.pnl)">
+            {{ positionValuesHidden ? "••••" : formatSigned(row.pnl) }}
             <small>{{ formatPercent(row.pnlPct) }} {{ directionMark(row.pnlPct) }}</small>
           </span>
         </div>
@@ -801,5 +962,17 @@ onBeforeUnmount(() => window.clearTimeout(resetTimer));
         </div>
       </div>
     </div>
+    <BacktestHistoryDialog
+      v-if="historyOpen"
+      :versions="backtestVersions"
+      :asset-name="strategyAsset?.name ?? '当前标的'"
+      :risk="state.trading.risk"
+      @close="closeBacktestHistory"
+    />
+    <StrategySensitivityDialog
+      v-if="sensitivityOpen && strategyAsset"
+      :asset="strategyAsset"
+      @close="closeSensitivity"
+    />
   </section>
 </template>

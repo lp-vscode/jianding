@@ -1,9 +1,10 @@
 export type AssetKind = "stock" | "fund";
 export type Market = "sh" | "sz" | "jj";
 export type ViewKey = "watchlist" | "holdings" | "trading" | "alerts" | "settings";
-export type QuoteState = "live" | "nav" | "demo";
+export type QuoteState = "live" | "nav" | "demo" | "close";
 export type TrendRange = "intraday" | "5d" | "day" | "week" | "month" | "1m" | "3m" | "1y";
-export type GainLossMode = "china" | "accessible";
+export type GainLossMode = "china" | "accessible" | "system";
+export type ThemeMode = "system" | "light" | "dark";
 export type WatchlistDensity = "comfortable" | "compact";
 export type WatchlistSort =
   | "default"
@@ -92,12 +93,27 @@ export type AlertType =
   | "pnlBelow";
 export type AlertLogic = "all" | "any";
 export type AlertSchedule = "any" | "trading" | "preopen" | "last10";
+export type AlertTemplateKey =
+  | "breakout"
+  | "volume"
+  | "pullback"
+  | "volatility"
+  | "goldenCross"
+  | "rsiOversold"
+  | "takeProfit"
+  | "stopLoss";
 
 export interface AlertCondition {
   type: AlertType;
   threshold: number;
   period?: number;
   secondaryPeriod?: number;
+}
+
+export interface AlertAutoTrade {
+  enabled: boolean;
+  side: TradingSide;
+  notional: number;
 }
 
 export interface AlertRule {
@@ -111,6 +127,7 @@ export interface AlertRule {
   createdAt: number;
   lastTriggeredAt: number | null;
   schedule?: AlertSchedule;
+  autoTrade?: AlertAutoTrade | null;
 }
 
 export interface WatchlistGroup {
@@ -247,6 +264,7 @@ export interface TradingLedger {
   strategy: TradingStrategy;
   risk: TradingRiskConfig;
   backtest: TradingBacktestResult | null;
+  backtestHistory: TradingBacktestResult[];
   agentDecisions: TradingAgentDecision[];
   updatedAt: number;
 }
@@ -270,9 +288,11 @@ export interface Settings {
   refreshSeconds: 5 | 15 | 30 | 60;
   startView: ViewKey;
   notifications: boolean;
+  themeMode: ThemeMode;
   gainLossMode: GainLossMode;
   watchlistDensity: WatchlistDensity;
   watchlistSort: WatchlistSort;
+  hidePositionValues: boolean;
 }
 
 export interface SearchResult {

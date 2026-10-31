@@ -57,6 +57,11 @@ export function formatTime(iso: string | null | undefined) {
   return iso;
 }
 
+export function formatShanghaiTime(timestamp: number | null | undefined) {
+  if (timestamp == null || !Number.isFinite(timestamp)) return "--";
+  return formatTime(new Date(timestamp + 8 * 60 * 60 * 1000).toISOString());
+}
+
 export function timeAgo(timestamp: number | null | undefined) {
   if (!timestamp) return "尚未触发";
   const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));

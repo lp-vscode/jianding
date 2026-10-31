@@ -1,7 +1,24 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { Activity, BellPlus, BellRing, CheckCheck, Copy, Inbox, Pencil, Plus, Trash2, Zap } from "lucide-vue-next";
-import type { AlertRule } from "../types";
+import {
+  Activity,
+  BellPlus,
+  BellRing,
+  Bot,
+  CheckCheck,
+  Copy,
+  Gauge,
+  Inbox,
+  Pencil,
+  Plus,
+  ShieldAlert,
+  Trash2,
+  TrendingDown,
+  TrendingUp,
+  Waves,
+  Zap,
+} from "lucide-vue-next";
+import type { AlertRule, AlertTemplateKey } from "../types";
 import {
   deleteAlert,
   markEventsRead,
@@ -13,6 +30,7 @@ import {
   updateAlert,
 } from "../lib/store";
 import { alertConditions, alertRuleSummary, isTriggered } from "../lib/alerts";
+import { ALERT_SCENARIOS } from "../lib/alert-scenarios";
 import { formatCompactMoney, formatPercent, formatPrice, priceDigits, timeAgo } from "../lib/format";
 import { getAlertDayStats, groupAlertEvents, type AlertEventGroup } from "../lib/event-summary";
 
@@ -49,6 +67,45 @@ const healthState = computed(() => {
   }
   return { label: "节奏平稳", detail: `${todayCount.value} 次触发已全部处理` };
 });
+const primaryAlertAction = computed(() => {
+  if (todayUnreadCount.value > 0) {
+    return {
+      label: "先处理未读触发",
+      detail: `${todayUnreadCount.value} 条事件尚未确认`,
+      cta: "全部已读",
+    };
+  }
+  if (todayCount.value > 0) {
+    return {
+      label: "整理今日盯盘复盘",
+      detail: `${todayGroupCount.value} 条摘要可复制保存`,
+      cta: "复制复盘",
+    };
+  }
+  return {
+    label: "把观察变成条件",
+    detail: "价格、涨跌幅与成交额可组合触发",
+    cta: "新建提醒",
+  };
+});
+
+const scenarioIcons: Record<AlertTemplateKey, typeof BellRing> = {
+  breakout: TrendingUp,
+  volume: Zap,
+  pullback: TrendingDown,
+  volatility: Waves,
+  goldenCross: Activity,
+  rsiOversold: Gauge,
+  takeProfit: TrendingUp,
+  stopLoss: ShieldAlert,
+};
+const scenarioTemplates = computed(() =>
+  ALERT_SCENARIOS.map((scenario) => ({
+    ...scenario,
+    icon: scenarioIcons[scenario.key],
+    disabled: scenario.requiresHolding === true && !state.holdings.length,
+  })),
+);
 
 function assetOf(symbol: string) {
   return state.assets.find((asset) => asset.symbol === symbol);
@@ -213,11 +270,35 @@ async function copyDailyReview() {
   }
 }
 
+function runPrimaryAlertAction() {
+  if (todayUnreadCount.value > 0) {
+    markEventsRead();
+    return;
+  }
+  if (todayCount.value > 0) {
+    void copyDailyReview();
+    return;
+  }
+  openAlertDialog();
+}
+
+function launchScenario(scenario: (typeof scenarioTemplates.value)[number]) {
+  if (scenario.disabled) {
+    showToast("请先在“我的持仓”添加至少一笔持仓", "info");
+    return;
+  }
+  const symbol =
+    scenario.requiresHolding === true
+      ? state.holdings[0]?.symbol ?? state.selectedSymbol
+      : state.selectedSymbol;
+  openAlertDialog(symbol, null, scenario.key);
+}
+
 onMounted(() => window.addEventListener("keydown", onShortcut));
 </script>
 
 <template>
-  <section>
+  <section class="view-page view-alerts">
     <div class="view-head">
       <div>
         <p class="eyebrow">Alerts</p>
@@ -230,59 +311,98 @@ onMounted(() => window.addEventListener("keydown", onShortcut));
           <span>同一规则 30 分钟内不重复提醒</span>
         </p>
       </div>
-      <div class="view-actions">
-        <button class="btn btn-primary" type="button" @click="openAlertDialog()">
-          <BellPlus :size="14" />
-          新建提醒
-        </button>
-      </div>
     </div>
 
-    <div class="panel stat-strip">
-      <div class="strip-stat">
-        <span class="strip-icon"><BellRing :size="15" /></span>
-        <span class="strip-copy">
-          <span>监控中</span>
-          <strong>{{ activeCount }} / {{ state.alerts.length }}</strong>
-        </span>
+    <div class="panel workspace-signal alerts-signal" :class="{ 'has-active-rules': activeCount > 0 }">
+      <div class="workspace-signal-meta">
+        <span>{{ activeCount }} / {{ state.alerts.length }} 条规则监控中</span>
+        <span class="workspace-signal-status"><i aria-hidden="true" />{{ healthState.label }}</span>
       </div>
-      <div class="strip-stat" :class="{ hot: todayCount > 0 }">
-        <span class="strip-icon"><Zap :size="15" /></span>
-        <span class="strip-copy">
-          <span>今日触发</span>
-          <strong>{{ todayCount }} 次</strong>
-        </span>
-      </div>
-      <div class="strip-stat" :class="{ hot: todayUnreadCount > 0 }">
-        <span class="strip-icon"><Inbox :size="15" /></span>
-        <span class="strip-copy">
-          <span>已处理 / 未处理</span>
-          <strong>{{ todayProcessedCount }} / {{ todayUnreadCount }}</strong>
-        </span>
-      </div>
-      <div class="strip-stat">
-        <span class="strip-icon"><Activity :size="15" /></span>
-        <span class="strip-copy">
-          <span>最活跃标的</span>
-          <strong>{{ mostActiveSymbol ? assetName(mostActiveSymbol) : "--" }}</strong>
-        </span>
-      </div>
-    </div>
 
-    <div class="panel alert-health">
-      <span class="alert-health-state">
-        <i />
-        <strong>{{ healthState.label }}</strong>
-        <small>{{ healthState.detail }}</small>
-      </span>
-      <span class="alert-health-summary">
-        今日 {{ todayCount }} 次触发合并为 {{ todayGroupCount }} 条摘要
-      </span>
-      <button class="btn btn-small" type="button" :disabled="!todayCount" @click="copyDailyReview">
-        <Copy :size="12" />
-        复制今日复盘
+      <div class="workspace-signal-board">
+        <div class="workspace-signal-core">
+          <div class="workspace-signal-core-head">
+            <span>今日触发</span>
+            <small>{{ healthState.label }}</small>
+          </div>
+          <strong>{{ todayCount }}<small> 次</small></strong>
+          <div class="workspace-signal-core-foot">
+            <span>{{ todayProcessedCount }} 已处理 · {{ todayUnreadCount }} 待处理</span>
+            <span>{{ healthState.detail }}</span>
+          </div>
+        </div>
+
+        <div class="workspace-signal-side">
+          <div class="workspace-signal-mini">
+            <span>未处理</span>
+            <strong>{{ todayUnreadCount }} 条</strong>
+            <small>{{ todayUnreadCount ? "建议先确认触发记录" : "今日事件已清空" }}</small>
+          </div>
+          <div class="workspace-signal-mini">
+            <span>处理率</span>
+            <strong>{{ todayCount ? `${dayStats.processingRate.toFixed(0)}%` : "--" }}</strong>
+            <small>今日 {{ todayCount }} 次触发</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="workspace-signal-facts">
+        <span>今日摘要</span>
+        <strong>{{ todayGroupCount }} 条</strong>
+        <i aria-hidden="true" />
+        <span>最活跃</span>
+        <strong>{{ mostActiveSymbol ? assetName(mostActiveSymbol) : "--" }}</strong>
+        <i aria-hidden="true" />
+        <span>规则</span>
+        <strong>{{ activeCount }} 条生效</strong>
+      </div>
+
+      <button class="workspace-signal-action" type="button" @click="runPrimaryAlertAction">
+        <span class="workspace-signal-action-icon" aria-hidden="true">
+          <BellPlus v-if="!todayCount" :size="17" />
+          <CheckCheck v-else-if="todayUnreadCount" :size="17" />
+          <Copy v-else :size="17" />
+        </span>
+        <span>
+          <strong>{{ primaryAlertAction.label }}</strong>
+          <small>{{ primaryAlertAction.detail }}</small>
+        </span>
+        <span class="workspace-signal-action-cta">{{ primaryAlertAction.cta }}</span>
       </button>
     </div>
+
+    <section class="panel alert-scenarios" aria-labelledby="alert-scenarios-title">
+      <div class="panel-head">
+        <div>
+          <h2 id="alert-scenarios-title">情景模板</h2>
+          <p>选中一个场景，直接预填条件并继续调整阈值</p>
+        </div>
+        <span class="chip">
+          <Zap :size="11" />
+          一键预填
+        </span>
+      </div>
+      <div class="alert-scenario-grid">
+        <button
+          v-for="scenario in scenarioTemplates"
+          :key="scenario.key"
+          class="alert-scenario"
+          :class="{ disabled: scenario.disabled }"
+          type="button"
+          :disabled="scenario.disabled"
+          :aria-label="`${scenario.label}：${scenario.description}`"
+          @click="launchScenario(scenario)"
+        >
+          <span class="alert-scenario-icon" aria-hidden="true">
+            <component :is="scenario.icon" :size="15" :stroke-width="1.7" />
+          </span>
+          <span>
+            <strong>{{ scenario.label }}</strong>
+            <small>{{ scenario.description }}</small>
+          </span>
+        </button>
+      </div>
+    </section>
 
     <div class="alerts-layout">
       <div class="panel">
@@ -328,6 +448,11 @@ onMounted(() => window.addEventListener("keydown", onShortcut));
                 }}
               </span>
               <strong>{{ alertRuleSummary(rule) }}</strong>
+              <small v-if="rule.autoTrade?.enabled" class="rule-auto-badge">
+                <Bot :size="10" aria-hidden="true" />
+                自动{{ rule.autoTrade.side === "buy" ? "买入" : "卖出" }}
+                ¥{{ formatCompactMoney(rule.autoTrade.notional) }}
+              </small>
             </div>
             <div class="rule-distance">
               <strong :class="distance(rule).tone">{{ distance(rule).text }}</strong>

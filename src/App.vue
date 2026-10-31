@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, watchEffect } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import AppSidebar from "./components/AppSidebar.vue";
 import CompactView from "./components/CompactView.vue";
@@ -37,11 +37,39 @@ const views = {
 };
 
 const compactMode = isTauri() && getCurrentWindow().label === "compact";
+const viewScroll = ref<HTMLElement | null>(null);
+const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+const systemPrefersDark = ref(themeMedia.matches);
+let nativeBridgeRetryTimer: number | undefined;
 
 watchEffect(() => {
+  const theme =
+    state.settings.themeMode === "system"
+      ? systemPrefersDark.value
+        ? "dark"
+        : "light"
+      : state.settings.themeMode;
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.dataset.themeMode = state.settings.themeMode;
   document.documentElement.dataset.gainLossMode = state.settings.gainLossMode;
   document.documentElement.dataset.watchDensity = state.settings.watchlistDensity;
+  const themeColorMeta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (themeColorMeta) {
+    themeColorMeta.removeAttribute("media");
+    themeColorMeta.content = theme === "dark" ? "#0d0d0e" : "#f2f2f7";
+  }
+  document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]').forEach((meta, index) => {
+    if (index > 0) meta.remove();
+  });
 });
+
+watch(
+  () => state.view,
+  async () => {
+    await nextTick();
+    if (viewScroll.value) viewScroll.value.scrollTop = 0;
+  },
+);
 
 function onKeydown(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null;
@@ -82,23 +110,37 @@ function onOffline() {
   setNetworkOnline(false);
 }
 
+function onSystemThemeChange(event: MediaQueryListEvent) {
+  systemPrefersDark.value = event.matches;
+}
+
 onMounted(() => {
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
   hydrate();
+  void nextTick(() => {
+    if (viewScroll.value) viewScroll.value.scrollTop = 0;
+  });
   void startWindowSync();
   if (!compactMode) {
     void hydrateTradingLedger();
     void refreshAll();
     startPolling();
+    nativeBridgeRetryTimer = window.setTimeout(() => {
+      void refreshAll();
+    }, 1_200);
   }
   window.addEventListener("keydown", onKeydown);
   window.addEventListener("online", onOnline);
   window.addEventListener("offline", onOffline);
+  themeMedia.addEventListener("change", onSystemThemeChange);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
   window.removeEventListener("online", onOnline);
   window.removeEventListener("offline", onOffline);
+  themeMedia.removeEventListener("change", onSystemThemeChange);
+  if (nativeBridgeRetryTimer !== undefined) window.clearTimeout(nativeBridgeRetryTimer);
   stopSyncingWindows();
 });
 </script>
@@ -109,7 +151,7 @@ onBeforeUnmount(() => {
     <AppSidebar />
     <main class="app-main">
       <MarketTicker />
-      <div class="view-scroll">
+      <div ref="viewScroll" class="view-scroll">
         <Transition name="view" mode="out-in">
           <component :is="views[state.view]" :key="state.view" />
         </Transition>

@@ -20,8 +20,54 @@ interface FundScriptData {
   values: FundValue[];
 }
 
-const USER_TIMEOUT = 12_000;
+const USER_TIMEOUT = 5_000;
 let scriptQueue: Promise<unknown> = Promise.resolve();
+let nativeMarketUnavailable = false;
+
+async function nativeMarketText(url: string) {
+  const harmonyShell =
+    Boolean(window.JiandingNative) ||
+    window.location.protocol === "resource:" ||
+    window.location.protocol === "file:";
+  if (!harmonyShell || nativeMarketUnavailable) return null;
+  const requestId = `market-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    return await new Promise<string | null>((resolve) => {
+      const timeout = window.setTimeout(() => {
+        window.removeEventListener("jianding:market-response", onResponse);
+        nativeMarketUnavailable = true;
+        resolve(null);
+      }, 10_000);
+      const onResponse = (event: Event) => {
+        const detail = (event as CustomEvent<Record<string, unknown>>).detail;
+        if (!detail || detail.requestId !== requestId) return;
+        window.clearTimeout(timeout);
+        window.removeEventListener("jianding:market-response", onResponse);
+        resolve(typeof detail.text === "string" && detail.text ? detail.text : null);
+      };
+      window.addEventListener("jianding:market-response", onResponse);
+      let requests: Array<{ requestId: string; url: string }> = [];
+      try {
+        requests = JSON.parse(
+          document.documentElement.dataset.jiandingMarketRequests ?? "[]",
+        ) as Array<{ requestId: string; url: string }>;
+      } catch {
+        requests = [];
+      }
+      requests.push({ requestId, url });
+      document.documentElement.dataset.jiandingMarketRequests = JSON.stringify(requests);
+      console.info("jianding:market-request", requestId);
+    });
+  } catch (error) {
+    console.warn("原生行情通道不可用，切换脚本通道", error);
+    nativeMarketUnavailable = true;
+    return null;
+  }
+}
+
+export async function fetchNativeMarketText(url: string) {
+  return nativeMarketText(url);
+}
 
 function parseNumber(value: unknown) {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -32,6 +78,12 @@ function parseNumber(value: unknown) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function decodeUnicodeEscapes(value: string) {
+  return value.replace(/\\u([0-9a-fA-F]{4})/g, (_, code: string) =>
+    String.fromCharCode(Number.parseInt(code, 16)),
+  );
+}
+
 function tencentTimestamp(value: string) {
   if (!/^\d{14}/.test(value)) return null;
   return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T${value.slice(8, 10)}:${value.slice(10, 12)}:${value.slice(12, 14)}`;
@@ -39,17 +91,6 @@ function tencentTimestamp(value: string) {
 
 function shanghaiDate(timestamp: number) {
   return new Date(timestamp + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
-
-async function fetchTencentText(url: string) {
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) throw new Error(`行情请求失败: ${response.status}`);
-  const bytes = await response.arrayBuffer();
-  try {
-    return new TextDecoder("gbk").decode(bytes);
-  } catch {
-    return new TextDecoder().decode(bytes);
-  }
 }
 
 function quoteBodyFields(text: string) {
@@ -66,34 +107,82 @@ function quoteBodyFields(text: string) {
     });
 }
 
-function parseTencentQuotes(text: string): Quote[] {
+export function parseTencentQuotes(text: string): Quote[] {
   return quoteBodyFields(text).flatMap(([symbol, fields]) => {
-    if (!/^(sh|sz)\d{6}$/.test(symbol) || fields.length < 35) return [];
+    if (!/^(sh|sz)\d{6}$/.test(symbol)) return [];
+    const codeIndex = fields.findIndex((value) => value === symbol.slice(2));
+    if (codeIndex < 0 || fields.length < codeIndex + 33) return [];
     const amount =
-      parseNumber(fields[35]?.split("/")[2]) ??
-      (parseNumber(fields[37]) === null ? null : Number(parseNumber(fields[37])) * 10_000);
-    const volumeValue = parseNumber(fields[36]);
+      parseNumber(fields[codeIndex + 33]?.split("/")[2]) ??
+      (parseNumber(fields[codeIndex + 35]) === null
+        ? null
+        : Number(parseNumber(fields[codeIndex + 35])) * 10_000);
+    const volumeValue = parseNumber(fields[codeIndex + 34]);
     return [
       {
         symbol,
-        code: fields[2] ?? symbol.slice(2),
+        code: fields[codeIndex],
         name: fields[1] ?? symbol,
-        price: parseNumber(fields[3]),
-        previousClose: parseNumber(fields[4]),
-        change: parseNumber(fields[31]),
-        changePct: parseNumber(fields[32]),
-        open: parseNumber(fields[5]),
-        high: parseNumber(fields[33]),
-        low: parseNumber(fields[34]),
+        price: parseNumber(fields[codeIndex + 1]),
+        previousClose: parseNumber(fields[codeIndex + 2]),
+        change: parseNumber(fields[codeIndex + 29]),
+        changePct: parseNumber(fields[codeIndex + 30]),
+        open: parseNumber(fields[codeIndex + 3]),
+        high: parseNumber(fields[codeIndex + 31]),
+        low: parseNumber(fields[codeIndex + 32]),
         volume: volumeValue === null ? null : volumeValue * 100,
         amount,
-        updatedAt: tencentTimestamp(fields[30] ?? ""),
+        updatedAt: tencentTimestamp(fields[codeIndex + 28] ?? ""),
         navDate: null,
         state: "live" as const,
         source: "腾讯行情",
       },
     ];
   });
+}
+
+async function loadTencentQuoteText(symbols: string[]) {
+  if (!symbols.length) return "";
+  const url = new URL("https://qt.gtimg.cn/q=" + symbols.join(","));
+  url.searchParams.set("_", String(Date.now()));
+  const nativeText = await nativeMarketText(url.toString());
+  if (nativeText !== null) return nativeText;
+  const script = await loadScript(url.toString());
+  const globals = window as unknown as Record<string, unknown>;
+  try {
+    return symbols
+      .flatMap((symbol) => {
+        const key = `v_${symbol}`;
+        const value = globals[key];
+        return typeof value === "string" ? [`${key}="${value}"`] : [];
+      })
+      .join(";");
+  } finally {
+    for (const symbol of symbols) delete globals[`v_${symbol}`];
+    script.remove();
+  }
+}
+
+async function loadJsonpData(url: string) {
+  const nativeText = await nativeMarketText(url);
+  if (nativeText !== null) {
+    const payload = JSON.parse(nativeText) as Record<string, unknown>;
+    if (!payload || typeof payload !== "object") throw new Error("行情数据格式无效");
+    return payload;
+  }
+  const callback = `jiandingData${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
+  const target = new URL(url);
+  target.searchParams.set("_var", callback);
+  const script = await loadScript(target.toString());
+  try {
+    const globals = window as unknown as Record<string, unknown>;
+    const payload = globals[callback];
+    if (!payload || typeof payload !== "object") throw new Error("行情数据格式无效");
+    return payload as Record<string, unknown>;
+  } finally {
+    delete (window as unknown as Record<string, unknown>)[callback];
+    script.remove();
+  }
 }
 
 function loadScript(url: string) {
@@ -104,6 +193,7 @@ function loadScript(url: string) {
       reject(new Error("数据脚本加载超时"));
     }, USER_TIMEOUT);
     script.async = true;
+    script.charset = "gbk";
     script.src = url;
     script.onload = () => {
       window.clearTimeout(timeout);
@@ -129,9 +219,28 @@ function serializedScript<T>(task: () => Promise<T>) {
 
 async function loadFundData(code: string): Promise<FundScriptData> {
   return serializedScript(async () => {
-    const script = await loadScript(
-      `https://fund.eastmoney.com/pingzhongdata/${encodeURIComponent(code)}.js?v=${Date.now()}`,
-    );
+    const url = `https://fund.eastmoney.com/pingzhongdata/${encodeURIComponent(code)}.js?v=${Date.now()}`;
+    const nativeText = await nativeMarketText(url.toString());
+    if (nativeText !== null) {
+      const name = nativeText.match(/var\s+fS_name\s*=\s*"([^"]*)"/)?.[1] ?? null;
+      const matchedCode = nativeText.match(/var\s+fS_code\s*=\s*"([^"]*)"/)?.[1] ?? null;
+      const rawValues = nativeText.match(/var\s+Data_netWorthTrend\s*=\s*(\[[\s\S]*?\]);/)?.[1];
+      const values = rawValues ? (JSON.parse(rawValues) as FundValue[]) : [];
+      const data = {
+        name,
+        code: matchedCode,
+        values: values.filter(
+          (value) =>
+            value &&
+            typeof value.x === "number" &&
+            typeof value.y === "number" &&
+            Number.isFinite(value.y),
+        ),
+      };
+      if (!data.values.length) throw new Error("基金净值数据为空");
+      return data;
+    }
+    const script = await loadScript(url);
     const globals = window as unknown as Record<string, unknown>;
     const values = Array.isArray(globals.Data_netWorthTrend)
       ? (globals.Data_netWorthTrend as FundValue[])
@@ -157,10 +266,18 @@ export async function fetchWebQuotes(assets: Asset[]): Promise<Quote[]> {
   const stockSymbols = assets
     .filter((asset) => asset.market === "sh" || asset.market === "sz")
     .map((asset) => asset.symbol);
+  const assetNames = new Map(assets.map((asset) => [asset.symbol, asset.name]));
   const fundAssets = assets.filter((asset) => asset.market === "jj");
   const [stockQuotes, fundQuotes] = await Promise.all([
     stockSymbols.length
-      ? fetchTencentText(`https://qt.gtimg.cn/q=${stockSymbols.join(",")}`).then(parseTencentQuotes)
+      ? loadTencentQuoteText(stockSymbols)
+          .then(parseTencentQuotes)
+          .then((quotes) =>
+            quotes.map((quote) => ({
+              ...quote,
+              name: assetNames.get(quote.symbol) ?? quote.name,
+            })),
+          )
       : Promise.resolve<Quote[]>([]),
     Promise.all(
       fundAssets.map(async (asset): Promise<Quote | null> => {
@@ -259,6 +376,13 @@ export async function searchWebAssets(query: string): Promise<SearchResult[]> {
       c: "1",
       _: String(Date.now()),
     }).toString();
+    const nativeText = await nativeMarketText(url.toString());
+    if (nativeText !== null) {
+      const payload = decodeUnicodeEscapes(
+        nativeText.match(/v_hint\s*=\s*"([^"]*)"/)?.[1] ?? "",
+      );
+      return payload && payload !== "none" ? parseSearchPayload(payload) : [];
+    }
     const script = await loadScript(url.toString());
     const globals = window as unknown as Record<string, unknown>;
     const payload = typeof globals.v_hint === "string" ? globals.v_hint : "";
@@ -345,12 +469,10 @@ async function fetchFundTrend(asset: Asset, range: TrendRange) {
 export async function fetchWebTrend(asset: Asset, range: TrendRange): Promise<TrendPoint[]> {
   if (asset.market === "jj") return fetchFundTrend(asset, range);
   if (range === "intraday") {
-    const response = await fetch(
+    const payload = await loadJsonpData(
       `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${encodeURIComponent(asset.symbol)}`,
-      { cache: "no-store" },
     );
-    if (!response.ok) throw new Error("分时走势请求失败");
-    return parseMinutePoints((await response.json()) as Record<string, unknown>, asset.symbol);
+    return parseMinutePoints(payload, asset.symbol);
   }
   const series = {
     "5d": ["day", 5],
@@ -364,32 +486,40 @@ export async function fetchWebTrend(asset: Asset, range: TrendRange): Promise<Tr
   } satisfies Record<TrendRange, readonly [string, number]>;
   const [period, count] = series[range];
   const params = new URLSearchParams({ param: `${asset.symbol},${period},,,${count},qfq` });
-  const response = await fetch(
+  const payload = await loadJsonpData(
     `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?${params.toString()}`,
-    { cache: "no-store" },
   );
-  if (!response.ok) throw new Error("K线走势请求失败");
-  return parseKlinePoints(
-    (await response.json()) as Record<string, unknown>,
-    asset.symbol,
-    period,
-    range === "1y",
-  );
+  return parseKlinePoints(payload, asset.symbol, period, range === "1y");
 }
 
 export async function fetchWebIndices(): Promise<IndexQuote[]> {
-  const text = await fetchTencentText(
-    "https://qt.gtimg.cn/q=s_sh000001,s_sz399001,s_sz399006",
-  );
+  const symbols = [
+    "s_sh000001",
+    "s_sz399001",
+    "s_sz399006",
+    "s_sh000300",
+    "s_sh000905",
+    "s_sh000688",
+  ];
+  const text = await loadTencentQuoteText(symbols);
   return quoteBodyFields(text).flatMap(([symbol, fields]) => {
+    const normalizedSymbol = symbol.replace(/^s_/, "");
     const price = parseNumber(fields[3]);
     const change = parseNumber(fields[4]);
     const changePct = parseNumber(fields[5]);
     if (!fields[1] || price === null || change === null || changePct === null) return [];
+    const canonicalNames: Record<string, string> = {
+      sh000001: "上证指数",
+      sz399001: "深证成指",
+      sz399006: "创业板指",
+      sh000300: "沪深300",
+      sh000905: "中证500",
+      sh000688: "科创50",
+    };
     return [
       {
-        symbol: symbol.replace(/^s_/, ""),
-        name: fields[1],
+        symbol: normalizedSymbol,
+        name: canonicalNames[normalizedSymbol] ?? fields[1],
         price,
         change,
         changePct,

@@ -4,6 +4,7 @@ import type {
   AlertCondition,
   AlertSchedule,
   AlertRule,
+  AlertTemplateKey,
   AlertType,
   Asset,
   Holding,
@@ -12,8 +13,10 @@ import type {
   Quote,
   SearchResult,
   Settings,
+  ThemeMode,
   ToastItem,
   TradingLedger,
+  TradingBacktestResult,
   TradingOrderType,
   TradingRiskConfig,
   TradingSide,
@@ -26,12 +29,16 @@ import {
   fetchIndices,
   fetchQuotes,
   fetchTrend,
+  isHarmonyWebView,
   isTauri,
   loadTradingLedgerDisk,
+  requestHarmonyNotificationPermission,
   saveTradingLedgerDisk,
+  sendHarmonyNotification,
 } from "./backend";
-import { alertConditions, alertEventMessage, isTriggered } from "./alerts";
-import { DEFAULT_ASSETS, demoAsset } from "./demo";
+import { alertConditions, alertEventMessage, alertRuleSummary, isTriggered } from "./alerts";
+import { buildAlertAutomationIntent } from "./alert-automation";
+import { DEFAULT_ASSETS, demoAsset, demoIndices, demoQuotes } from "./demo";
 import { effectiveRefreshMs, marketPhase, shanghaiParts } from "./market";
 import {
   cancelTradingOrder,
@@ -49,6 +56,7 @@ import {
   sanitizeTradingLedger,
   submitTradingOrder,
   suggestedTradingQuantity,
+  tradingQuantity,
 } from "./trading";
 
 const STORAGE_KEY = "jianding:state:v1";
@@ -58,9 +66,11 @@ const DEFAULT_SETTINGS: Settings = {
   refreshSeconds: 15,
   startView: "watchlist",
   notifications: true,
+  themeMode: "system",
   gainLossMode: "china",
   watchlistDensity: "comfortable",
   watchlistSort: "default",
+  hidePositionValues: false,
 };
 
 interface PersistedState {
@@ -91,7 +101,12 @@ interface AppState extends PersistedState {
   toasts: ToastItem[];
   detailRange: TrendRange;
   holdingDialog: { open: boolean; holding: Holding | null };
-  alertDialog: { open: boolean; symbol: string | null; rule: AlertRule | null };
+  alertDialog: {
+    open: boolean;
+    symbol: string | null;
+    rule: AlertRule | null;
+    template: AlertTemplateKey | null;
+  };
 }
 
 interface WindowStatePayload {
@@ -184,6 +199,17 @@ function sanitizeAlertRule(raw: unknown): AlertRule | null {
     )
       ? (rule.schedule as AlertSchedule)
       : "any",
+    autoTrade:
+      rule.autoTrade && typeof rule.autoTrade === "object"
+        ? {
+            enabled: rule.autoTrade.enabled === true,
+            side: rule.autoTrade.side === "sell" ? "sell" : "buy",
+            notional: Math.min(
+              10_000_000,
+              Math.max(1000, Number(rule.autoTrade.notional) || 50_000),
+            ),
+          }
+        : null,
     enabled: rule.enabled !== false,
     createdAt: typeof rule.createdAt === "number" ? rule.createdAt : Date.now(),
     lastTriggeredAt: typeof rule.lastTriggeredAt === "number" ? rule.lastTriggeredAt : null,
@@ -221,7 +247,7 @@ export const state = reactive<AppState>({
   toasts: [],
   detailRange: "intraday",
   holdingDialog: { open: false, holding: null },
-  alertDialog: { open: false, symbol: null, rule: null },
+  alertDialog: { open: false, symbol: null, rule: null, template: null },
 });
 
 export const watchlistAssets = computed(() => {
@@ -235,13 +261,15 @@ export const selectedAsset = computed(
   () => state.assets.find((asset) => asset.symbol === state.selectedSymbol) ?? watchlistAssets.value[0] ?? null,
 );
 
-export const dataMode = computed<"live" | "demo" | "mixed" | "loading" | "cached">(() => {
+export const dataMode = computed<"live" | "demo" | "close" | "mixed" | "loading" | "cached">(() => {
   if (state.marketFromCache) return "cached";
   const quotes = Object.values(state.quotes);
   if (!quotes.length) return "loading";
   const demo = quotes.filter((quote) => quote.state === "demo").length;
+  const close = quotes.filter((quote) => quote.state === "close").length;
   if (demo === quotes.length) return "demo";
-  if (demo > 0 || quotes.some((quote) => quote.state === "nav")) return "mixed";
+  if (close === quotes.length) return "close";
+  if (demo > 0 || close > 0 || quotes.some((quote) => quote.state === "nav")) return "mixed";
   return "live";
 });
 
@@ -321,8 +349,15 @@ function sanitizePersisted(raw: unknown): PersistedState | null {
       typeof source.settings?.notifications === "boolean"
         ? source.settings.notifications
         : DEFAULT_SETTINGS.notifications,
+    themeMode: (["system", "light", "dark"] as ThemeMode[]).includes(
+      source.settings?.themeMode as ThemeMode,
+    )
+      ? (source.settings?.themeMode as ThemeMode)
+      : DEFAULT_SETTINGS.themeMode,
     gainLossMode:
-      source.settings?.gainLossMode === "accessible" || source.settings?.gainLossMode === "china"
+      source.settings?.gainLossMode === "accessible" ||
+      source.settings?.gainLossMode === "china" ||
+      source.settings?.gainLossMode === "system"
         ? source.settings.gainLossMode
         : DEFAULT_SETTINGS.gainLossMode,
     watchlistDensity:
@@ -334,6 +369,10 @@ function sanitizePersisted(raw: unknown): PersistedState | null {
     )
       ? (source.settings?.watchlistSort as Settings["watchlistSort"])
       : DEFAULT_SETTINGS.watchlistSort,
+    hidePositionValues:
+      typeof source.settings?.hidePositionValues === "boolean"
+        ? source.settings.hidePositionValues
+        : DEFAULT_SETTINGS.hidePositionValues,
   };
   const marketSnapshot =
     source.marketSnapshot &&
@@ -461,7 +500,13 @@ export function hydrate() {
   } catch (error) {
     console.warn("读取本地数据失败，已使用默认自选", error);
   }
-  if (!Object.keys(state.quotes).length) applyMarketSnapshot();
+  if (!Object.keys(state.quotes).length && !applyMarketSnapshot()) {
+    const fallback = demoQuotes(watchlistAssets.value);
+    state.quotes = Object.fromEntries(fallback.map((quote) => [quote.symbol, quote]));
+    state.indices = demoIndices();
+    state.lastUpdated = Date.parse("2026-10-30T15:00:00+08:00");
+    state.marketFromCache = false;
+  }
   state.view = state.settings.startView;
   state.ready = true;
 }
@@ -803,6 +848,12 @@ export async function evaluateTradingStrategy(manual = false) {
 
 export function updateTradingStrategy(patch: Partial<TradingStrategy>) {
   const strategy = state.trading.strategy;
+  const previous = {
+    symbol: strategy.symbol,
+    shortWindow: strategy.shortWindow,
+    longWindow: strategy.longWindow,
+    orderNotional: strategy.orderNotional,
+  };
   if (patch.symbol && state.watchlist.includes(patch.symbol)) strategy.symbol = patch.symbol;
   if (patch.shortWindow != null) {
     strategy.shortWindow = Math.min(60, Math.max(2, Math.round(patch.shortWindow)));
@@ -814,6 +865,20 @@ export function updateTradingStrategy(patch: Partial<TradingStrategy>) {
   if (patch.orderNotional != null) strategy.orderNotional = Math.max(1000, patch.orderNotional);
   if (patch.enabled != null) strategy.enabled = patch.enabled;
   if (patch.agentEnabled != null) strategy.agentEnabled = patch.agentEnabled;
+  const evaluationInputsChanged =
+    previous.symbol !== strategy.symbol ||
+    previous.shortWindow !== strategy.shortWindow ||
+    previous.longWindow !== strategy.longWindow ||
+    previous.orderNotional !== strategy.orderNotional;
+  if (evaluationInputsChanged) {
+    strategy.lastCross = null;
+    strategy.lastEvaluatedAt = null;
+    strategy.lastAction = "hold";
+    strategy.lastReason = "策略参数已更新，等待重新评估";
+    strategy.lastShortMa = null;
+    strategy.lastLongMa = null;
+    state.trading.backtest = null;
+  }
   state.trading.updatedAt = Date.now();
   scheduleSave();
 }
@@ -827,6 +892,11 @@ export function updateTradingRisk(patch: Partial<TradingRiskConfig>) {
   }
   if (patch.stopLossPct != null) risk.stopLossPct = Math.min(50, Math.max(0.5, patch.stopLossPct));
   if (patch.takeProfitPct != null) risk.takeProfitPct = Math.min(200, Math.max(1, patch.takeProfitPct));
+  if (state.trading.backtest) {
+    state.trading.backtest.riskPassed =
+      state.trading.backtest.totalReturn > 0 &&
+      state.trading.backtest.maxDrawdown <= risk.maxDrawdownPct;
+  }
   state.trading.updatedAt = Date.now();
   scheduleSave();
 }
@@ -846,9 +916,7 @@ export async function runTradingBacktest() {
       state.trading.risk,
       state.trading.initialCapital,
     );
-    state.trading.backtest = result;
-    state.trading.updatedAt = Date.now();
-    scheduleSave();
+    storeTradingBacktest(result);
     showToast(
       `回测完成：收益 ${result.totalReturn.toFixed(2)}%，最大回撤 ${result.maxDrawdown.toFixed(2)}%`,
       result.riskPassed ? "success" : "info",
@@ -858,6 +926,16 @@ export async function runTradingBacktest() {
     backtestPromise = null;
   });
   return backtestPromise;
+}
+
+export function storeTradingBacktest(result: TradingBacktestResult) {
+  state.trading.backtest = result;
+  state.trading.backtestHistory = [
+    result,
+    ...state.trading.backtestHistory.filter((item) => item.id !== result.id),
+  ].slice(0, 6);
+  state.trading.updatedAt = Date.now();
+  scheduleSave();
 }
 
 export function placeTradingOrder(input: {
@@ -910,7 +988,8 @@ export async function refreshQuotes(force = false) {
   if (!force && Date.now() - lastFetchAt < 1000) return;
   refreshingPromise = (async () => {
     state.refreshing = true;
-    state.online = typeof navigator === "undefined" ? true : navigator.onLine;
+    state.online =
+      typeof navigator === "undefined" || navigator.onLine || isHarmonyWebView();
     if (!state.online) {
       applyMarketSnapshot();
       state.refreshing = false;
@@ -949,7 +1028,7 @@ export async function refreshQuotes(force = false) {
 }
 
 export async function refreshIndices() {
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  if (typeof navigator !== "undefined" && !navigator.onLine && !isHarmonyWebView()) {
     state.online = false;
     applyMarketSnapshot();
     return;
@@ -1023,7 +1102,21 @@ export function addToWatchlist(result: SearchResult) {
   selectAsset(asset.symbol);
   state.searchOpen = false;
   scheduleSave();
+  void refreshSingleAssetQuote(asset);
   void refreshQuotes(true);
+}
+
+async function refreshSingleAssetQuote(asset: Asset) {
+  try {
+    const [quote] = await fetchQuotes([asset]);
+    if (!quote) return;
+    state.quotes = { ...state.quotes, [quote.symbol]: quote };
+    state.lastUpdated = Date.now();
+    state.marketFromCache = false;
+    scheduleSave();
+  } catch (error) {
+    console.warn(`${asset.name} 添加后行情加载失败`, error);
+  }
 }
 
 export function removeFromWatchlist(symbol: string) {
@@ -1200,15 +1293,25 @@ export function closeHoldingDialog() {
   state.holdingDialog = { open: false, holding: null };
 }
 
-export function openAlertDialog(symbol: string | null = null, rule: AlertRule | null = null) {
-  state.alertDialog = { open: true, symbol: symbol ?? state.selectedSymbol, rule };
+export function openAlertDialog(
+  symbol: string | null = null,
+  rule: AlertRule | null = null,
+  template: AlertTemplateKey | null = null,
+) {
+  state.alertDialog = {
+    open: true,
+    symbol: symbol ?? state.selectedSymbol,
+    rule,
+    template,
+  };
 }
 
 export function closeAlertDialog() {
-  state.alertDialog = { open: false, symbol: null, rule: null };
+  state.alertDialog = { open: false, symbol: null, rule: null, template: null };
 }
 
 export async function requestNotificationPermission() {
+  if (isHarmonyWebView()) return requestHarmonyNotificationPermission();
   if (!isTauri()) return true;
   try {
     const { isPermissionGranted, requestPermission } = await import("@tauri-apps/plugin-notification");
@@ -1221,7 +1324,12 @@ export async function requestNotificationPermission() {
 }
 
 async function sendSystemNotification(body: string) {
-  if (!state.settings.notifications || !isTauri()) return;
+  if (!state.settings.notifications) return;
+  if (isHarmonyWebView()) {
+    await sendHarmonyNotification("简盯 · 提醒", body);
+    return;
+  }
+  if (!isTauri()) return;
   try {
     const { isPermissionGranted, requestPermission, sendNotification } = await import(
       "@tauri-apps/plugin-notification"
@@ -1295,12 +1403,73 @@ async function checkAlerts() {
       continue;
     }
     rule.lastTriggeredAt = now;
+    let eventMessage = alertEventMessage(rule, quote);
+    const asset = assetForSymbol(rule.symbol);
+    const automationIntent = buildAlertAutomationIntent(
+      rule,
+      asset,
+      quote,
+      state.trading,
+    );
+    if (automationIntent) {
+      if (automationIntent.blockedReason) {
+        eventMessage += `；自动执行已跳过：${automationIntent.blockedReason}`;
+      } else {
+        const stats = calculateTradingStats(state.trading, state.quotes, new Date(now));
+        const signal = {
+          id: uid("alert_signal"),
+          symbol: rule.symbol,
+          action: automationIntent.side,
+          reason: `提醒联动：${alertRuleSummary(rule)}`,
+          price: quote.price ?? 0,
+          shortMa: 0,
+          longMa: 0,
+          at: now,
+          orderId: null,
+        };
+        const decision = evaluateTradingAgent(
+          state.trading,
+          signal,
+          quote,
+          automationIntent.quantity,
+          stats,
+          now,
+        );
+        if (decision.action === "block" || decision.action === "observe") {
+          eventMessage += `；自动执行已阻断：${decision.reason}`;
+        } else {
+          const quantity =
+            decision.action === "reduce"
+              ? tradingQuantity(asset, Math.floor(automationIntent.quantity / 2))
+              : automationIntent.quantity;
+          const result = submitTradingOrder(
+            state.trading,
+            {
+              symbol: rule.symbol,
+              side: automationIntent.side,
+              type: "market",
+              quantity,
+              reason: decision.reason,
+            },
+            asset,
+            quote,
+            now,
+          );
+          if (result.fill) {
+            eventMessage += `；已自动${automationIntent.side === "buy" ? "买入" : "卖出"} ${result.fill.quantity} ${asset.kind === "fund" ? "份" : "股"}，成交价 ¥${result.fill.price.toFixed(asset.kind === "fund" ? 4 : 2)}`;
+            recordEquityPoint(state.trading, state.quotes, now, true);
+          } else {
+            eventMessage += `；自动执行未成交：${result.error ?? decision.reason}`;
+          }
+        }
+      }
+    }
     const event: AlertEvent = {
       id: uid("event"),
       ruleId: rule.id,
       symbol: rule.symbol,
       name: quote.name,
-      message: alertEventMessage(rule, quote),
+      message: eventMessage,
       price: quote.price ?? 0,
       at: now,
       read: false,

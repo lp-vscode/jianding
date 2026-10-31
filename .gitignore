@@ -4,6 +4,8 @@ src-tauri/target
 .playwright-cli
 .impeccable
 output/playwright
+output/harmony
+test-results
 .DS_Store
 work
 *.log

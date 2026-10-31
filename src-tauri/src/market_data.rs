@@ -623,7 +623,7 @@ fn parse_tencent_indices(text: &str) -> Vec<IndexQuote> {
 #[tauri::command]
 pub async fn fetch_indices() -> Result<Vec<IndexQuote>, String> {
     let bytes = client()?
-        .get("https://qt.gtimg.cn/q=s_sh000001,s_sz399001,s_sz399006")
+        .get("https://qt.gtimg.cn/q=s_sh000001,s_sz399001,s_sz399006,s_sh000300,s_sh000905,s_sh000688")
         .send()
         .await
         .map_err(|error| format!("指数行情请求失败: {error}"))?
@@ -727,7 +727,7 @@ mod tests {
             .any(|quote| quote.symbol == "jj012414" && quote.state == "nav"));
 
         let indices = fetch_indices().await.expect("indices should be available");
-        assert_eq!(indices.len(), 3);
+        assert_eq!(indices.len(), 6);
 
         let results = search_assets_impl("贵州茅台")
             .await

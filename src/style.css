@@ -1,24 +1,24 @@
 :root {
   color-scheme: light;
-  --paper: #f5f5f7;
-  --paper-deep: #ececf0;
-  --panel: rgba(255, 255, 255, 0.92);
+  --paper: #f2f2f7;
+  --paper-deep: #e5e5ea;
+  --panel: #ffffff;
   --panel-soft: #f7f7f9;
   --panel-raised: #ffffff;
   --ink: #1d1d1f;
   --ink-2: #515154;
   --ink-3: #6e6e73;
   --ink-4: #a1a1a6;
-  --line: rgba(0, 0, 0, 0.08);
+  --line: rgba(60, 60, 67, 0.18);
   --line-strong: rgba(0, 0, 0, 0.14);
-  --gold: #a47b3d;
-  --gold-strong: #805d29;
+  --gold: #805d29;
+  --gold-strong: #704f20;
   --gold-soft: #c6a56d;
   --gold-wash: rgba(164, 123, 61, 0.09);
-  --up: #b34634;
-  --up-wash: rgba(179, 70, 52, 0.09);
-  --down: #37745b;
-  --down-wash: rgba(55, 116, 91, 0.09);
+  --up: #d70015;
+  --up-wash: rgba(255, 59, 48, 0.08);
+  --down: #087a3b;
+  --down-wash: rgba(52, 199, 89, 0.08);
   --trend-up: var(--up);
   --trend-down: var(--down);
   --trend-up-wash: var(--up-wash);
@@ -27,10 +27,18 @@
   --nav-2: #171613;
   --nav-ink: #d7d0c1;
   --nav-muted: #8e8879;
-  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.035), 0 14px 34px -28px rgba(0, 0, 0, 0.2);
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.04);
   --shadow-float: 0 28px 70px -24px rgba(0, 0, 0, 0.28), 0 3px 10px rgba(0, 0, 0, 0.06);
-  --radius: 16px;
-  --font-ui: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+  --radius: 18px;
+  --radius-row: 12px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
     sans-serif;
   --font-display: var(--font-ui);
   --font-data: "SF Mono", "Menlo", "Consolas", "Liberation Mono", monospace;
@@ -51,6 +59,42 @@
   --trend-down-wash: rgba(154, 84, 34, 0.1);
 }
 
+:root[data-gain-loss-mode="system"] {
+  --trend-up: #34c759;
+  --trend-down: #ff3b30;
+  --trend-up-wash: rgba(52, 199, 89, 0.09);
+  --trend-down-wash: rgba(255, 59, 48, 0.09);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0d0d0e;
+  --paper-deep: #161416;
+  --panel: #19181a;
+  --panel-soft: #232124;
+  --panel-raised: #201e21;
+  --ink: #f7f2e8;
+  --ink-2: #d1c9bb;
+  --ink-3: #9d978d;
+  --ink-4: #69645d;
+  --line: rgba(255, 244, 229, 0.11);
+  --line-strong: rgba(255, 244, 229, 0.22);
+  --gold: #d6b77d;
+  --gold-strong: #ecd09a;
+  --gold-soft: #9f8050;
+  --gold-wash: rgba(214, 183, 125, 0.12);
+  --up: #ff6259;
+  --down: #39cf81;
+  --up-wash: rgba(255, 98, 89, 0.14);
+  --down-wash: rgba(57, 207, 129, 0.13);
+  --trend-up: var(--up);
+  --trend-down: var(--down);
+  --trend-up-wash: var(--up-wash);
+  --trend-down-wash: var(--down-wash);
+  --shadow-panel: 0 1px 0 rgba(255, 255, 255, 0.025), 0 18px 44px rgba(0, 0, 0, 0.28);
+  --shadow-float: 0 32px 80px -24px rgba(0, 0, 0, 0.72), 0 3px 12px rgba(0, 0, 0, 0.34);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -67,7 +111,7 @@ body {
   overflow: hidden;
   background: var(--paper);
   color: var(--ink);
-  font-size: 14px;
+  font-size: 15px;
   letter-spacing: -0.006em;
 }
 

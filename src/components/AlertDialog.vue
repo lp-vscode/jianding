@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { AlertCircle, BellRing, Info, Plus, Trash2, X } from "lucide-vue-next";
-import type { AlertLogic, AlertSchedule, AlertType } from "../types";
+import { AlertCircle, BellRing, Bot, Info, Plus, ShieldCheck, Trash2, X } from "lucide-vue-next";
+import type { AlertLogic, AlertSchedule, AlertTemplateKey, AlertType, TradingSide } from "../types";
 import {
   assetForSymbol,
   closeAlertDialog,
@@ -14,6 +14,7 @@ import {
   watchlistAssets,
 } from "../lib/store";
 import { ALERT_SHORT_LABELS, alertConditions } from "../lib/alerts";
+import { ALERT_SCENARIOS } from "../lib/alert-scenarios";
 import { directionMark, formatPercent, formatPrice, priceDigits, toneOf } from "../lib/format";
 
 interface ConditionDraft {
@@ -23,16 +24,9 @@ interface ConditionDraft {
   secondaryPeriod?: number;
 }
 
-type AlertTemplateKey =
-  | "breakout"
-  | "volume"
-  | "pullback"
-  | "volatility"
-  | "goldenCross"
-  | "rsiOversold";
-
 const rule = state.alertDialog.rule;
 const editing = Boolean(rule);
+const initialTemplate = state.alertDialog.template;
 
 const symbol = ref(state.alertDialog.symbol ?? state.selectedSymbol ?? state.watchlist[0] ?? "");
 const initialConditions = rule ? alertConditions(rule) : [{ type: "priceAbove" as const, threshold: 0 }];
@@ -48,12 +42,31 @@ const logic = ref<AlertLogic>(rule?.logic ?? "all");
 const schedule = ref<AlertSchedule>(rule?.schedule ?? "any");
 const error = ref("");
 const deleteArmed = ref(false);
+const autoTradeEnabled = ref(Boolean(rule?.autoTrade?.enabled));
+const autoTradeSide = ref<TradingSide>(
+  rule?.autoTrade?.side ??
+    (initialConditions.some((condition) =>
+      ["pctBelow", "smaDeath", "gapDown", "pnlBelow"].includes(condition.type),
+    )
+      ? "sell"
+      : "buy"),
+);
+const autoTradeNotional = ref(String(rule?.autoTrade?.notional ?? 50_000));
 let deleteTimer: number | undefined;
 
 const asset = computed(() => (symbol.value ? assetForSymbol(symbol.value) : null));
 const quote = computed(() => (symbol.value ? quoteFor(symbol.value) : undefined));
 const holding = computed(() => state.holdings.find((item) => item.symbol === symbol.value));
 const digits = computed(() => priceDigits(asset.value?.kind ?? "stock", quote.value?.price ?? null));
+const automationStatus = computed(() => {
+  if (!state.trading.strategy.agentEnabled) return "需先在量化交易中启用智能体";
+  if (!state.trading.backtest) return "需先完成一次历史回测";
+  if (!state.trading.backtest.riskPassed) return "回测风控尚未通过";
+  return "触发后由智能体复核，并执行模拟市价单";
+});
+const automationReady = computed(
+  () => state.trading.strategy.agentEnabled && state.trading.backtest?.riskPassed === true,
+);
 
 const typeOptions: { key: AlertType; label: string; hint: string }[] = [
   { key: "priceAbove", label: "价格涨破", hint: "元" },
@@ -74,44 +87,19 @@ const typeOptions: { key: AlertType; label: string; hint: string }[] = [
 
 const templates = computed(() => {
   const price = quote.value?.price;
-  return [
-    {
-      key: "breakout" as const,
-      label: "突破上沿",
-      description: price == null ? "当前价 +3%" : `现价 ${formatPrice(price * 1.03, digits.value)}`,
-      disabled: price == null || asset.value?.market === "jj",
-    },
-    {
-      key: "volume" as const,
-      label: "放量上攻",
-      description: "上涨 3% 且成交额 ≥ 10 亿",
-      disabled: price == null || asset.value?.market === "jj",
-    },
-    {
-      key: "pullback" as const,
-      label: "回落观察",
-      description: price == null ? "当前价 -3%" : `现价 ${formatPrice(price * 0.97, digits.value)}`,
-      disabled: price == null || asset.value?.market === "jj",
-    },
-    {
-      key: "volatility" as const,
-      label: "双向异动",
-      description: "涨跌任一方向达到 5%",
-      disabled: false,
-    },
-    {
-      key: "goldenCross" as const,
-      label: "均线金叉",
-      description: "SMA 5 上穿 SMA 20",
-      disabled: false,
-    },
-    {
-      key: "rsiOversold" as const,
-      label: "RSI 超卖",
-      description: "RSI 14 低于 30",
-      disabled: false,
-    },
-  ];
+  return ALERT_SCENARIOS.map((scenario) => ({
+    ...scenario,
+    description:
+      scenario.key === "breakout" && price != null
+        ? `上破 ${formatPrice(price * 1.03, digits.value)}`
+        : scenario.key === "pullback" && price != null
+          ? `回落至 ${formatPrice(price * 0.97, digits.value)}`
+          : scenario.description,
+    disabled:
+      scenario.requiresHolding === true && !holding.value ||
+      (asset.value?.market === "jj" &&
+        (scenario.key === "breakout" || scenario.key === "volume" || scenario.key === "pullback")),
+  }));
 });
 
 function defaultPrice(next: AlertType) {
@@ -215,25 +203,39 @@ function applyTemplate(key: AlertTemplateKey) {
   if (key === "breakout" && price != null) {
     conditions.value = [conditionDraft("priceAbove", String(Number((price * 1.03).toFixed(digits.value))))];
     logic.value = "all";
+    if (!editing) autoTradeSide.value = "buy";
   } else if (key === "volume" && price != null) {
     conditions.value = [
       conditionDraft("priceAbove", String(Number((price * 1.03).toFixed(digits.value)))),
       conditionDraft("amountAbove", "10"),
     ];
     logic.value = "all";
+    if (!editing) autoTradeSide.value = "buy";
   } else if (key === "pullback" && price != null) {
     conditions.value = [conditionDraft("priceBelow", String(Number((price * 0.97).toFixed(digits.value))))];
     logic.value = "all";
+    if (!editing) autoTradeSide.value = "sell";
+  } else if (key === "takeProfit") {
+    conditions.value = [conditionDraft("pnlAbove", "10")];
+    logic.value = "all";
+    if (!editing) autoTradeSide.value = "sell";
+  } else if (key === "stopLoss") {
+    conditions.value = [conditionDraft("pnlBelow", "5")];
+    logic.value = "all";
+    if (!editing) autoTradeSide.value = "sell";
   } else {
     if (key === "goldenCross") {
       conditions.value = [conditionDraft("smaGolden", "1")];
       logic.value = "all";
+      if (!editing) autoTradeSide.value = "buy";
     } else if (key === "rsiOversold") {
       conditions.value = [conditionDraft("rsiBelow", "30")];
       logic.value = "all";
+      if (!editing) autoTradeSide.value = "buy";
     } else {
       conditions.value = [conditionDraft("pctAbove", "5"), conditionDraft("pctBelow", "5")];
       logic.value = "any";
+      if (!editing) autoTradeSide.value = "buy";
     }
   }
   error.value = "";
@@ -296,6 +298,14 @@ function save() {
     error.value = "场外基金暂不提供盘中成交额条件";
     return;
   }
+  const automationNotional = Number(autoTradeNotional.value);
+  if (
+    autoTradeEnabled.value &&
+    (!Number.isFinite(automationNotional) || automationNotional < 1000)
+  ) {
+    error.value = "自动执行金额至少为 1,000 元";
+    return;
+  }
   if (
     parsed.some((condition) => condition.type === "pnlAbove" || condition.type === "pnlBelow") &&
     !state.holdings.some((holding) => holding.symbol === symbol.value)
@@ -313,6 +323,13 @@ function save() {
       logic: parsed.length > 1 ? logic.value : "all",
       schedule: schedule.value,
       lastTriggeredAt: null,
+      autoTrade: autoTradeEnabled.value
+        ? {
+            enabled: true,
+            side: autoTradeSide.value,
+            notional: automationNotional,
+          }
+        : null,
     });
     showToast("提醒规则已更新", "success");
   } else {
@@ -323,6 +340,13 @@ function save() {
       conditions: parsed,
       logic: parsed.length > 1 ? logic.value : "all",
       schedule: schedule.value,
+      autoTrade: autoTradeEnabled.value
+        ? {
+            enabled: true,
+            side: autoTradeSide.value,
+            notional: automationNotional,
+          }
+        : null,
     });
   }
   closeAlertDialog();
@@ -360,7 +384,10 @@ watch(
 );
 
 onBeforeUnmount(() => window.clearTimeout(deleteTimer));
-onMounted(() => document.querySelector<HTMLInputElement>(".condition-row input")?.focus());
+onMounted(() => {
+  if (!editing && initialTemplate) applyTemplate(initialTemplate);
+  document.querySelector<HTMLInputElement>(".condition-row input")?.focus();
+});
 </script>
 
 <template>
@@ -541,6 +568,62 @@ onMounted(() => document.querySelector<HTMLInputElement>(".condition-row input")
           </select>
           <small>本机提醒仅在应用运行时检查；关闭应用后不会在后台触发</small>
         </label>
+
+        <section class="alert-automation-card" :class="{ enabled: autoTradeEnabled }">
+          <div class="alert-automation-head">
+            <div>
+              <strong>触发后自动执行</strong>
+              <small>仅作用于本地模拟账户，不连接真实券商</small>
+            </div>
+            <button
+              class="toggle"
+              :class="{ on: autoTradeEnabled }"
+              type="button"
+              role="switch"
+              :aria-checked="autoTradeEnabled"
+              aria-label="提醒触发后自动执行模拟委托"
+              @click="autoTradeEnabled = !autoTradeEnabled"
+            />
+          </div>
+          <div v-if="autoTradeEnabled" class="alert-automation-body">
+            <div class="segmented" role="group" aria-label="自动委托方向">
+              <button
+                type="button"
+                :class="{ active: autoTradeSide === 'buy' }"
+                :aria-pressed="autoTradeSide === 'buy'"
+                @click="autoTradeSide = 'buy'"
+              >
+                自动买入
+              </button>
+              <button
+                type="button"
+                :class="{ active: autoTradeSide === 'sell' }"
+                :aria-pressed="autoTradeSide === 'sell'"
+                @click="autoTradeSide = 'sell'"
+              >
+                自动卖出
+              </button>
+            </div>
+            <label class="field">
+              <span>单次委托金额</span>
+              <div class="input-suffix">
+                <input
+                  v-model="autoTradeNotional"
+                  type="number"
+                  inputmode="decimal"
+                  min="1000"
+                  step="1000"
+                  aria-label="自动执行单次委托金额"
+                />
+                <em>元</em>
+              </div>
+            </label>
+            <div class="alert-automation-status" :class="{ ready: automationReady }" role="status">
+              <component :is="automationReady ? ShieldCheck : Bot" :size="13" aria-hidden="true" />
+              <span>{{ automationStatus }}</span>
+            </div>
+          </div>
+        </section>
 
         <div class="alert-preview">
           <BellRing :size="13" />

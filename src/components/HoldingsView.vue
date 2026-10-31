@@ -18,6 +18,16 @@ import {
   priceDigits,
   toneOf,
 } from "../lib/format";
+import { marketPhase } from "../lib/market";
+import { buildPortfolioPulse } from "../lib/portfolio";
+import PositionValueToggle from "./PositionValueToggle.vue";
+import RebalancePanel from "./RebalancePanel.vue";
+import HoldingsRiskHeatmap, { type HoldingRiskRow } from "./HoldingsRiskHeatmap.vue";
+
+function quoteFreshnessLabel(quote: { state: string } | undefined) {
+  if (quote?.state !== "demo") return "最新";
+  return marketPhase() === "交易中" ? "示例行情" : "收盘快照";
+}
 
 const rows = computed(() => {
   const list = state.holdings.map((holding) => {
@@ -58,11 +68,51 @@ const totals = computed(() => {
   return { value, cost, pnl, pnlPct, dayPnl, dayPct };
 });
 
+const portfolioPulse = computed(() =>
+  buildPortfolioPulse(
+    rows.value.map((row) => ({
+      name: row.asset.name,
+      weight: row.weight,
+      dayPnl: row.dayPnl,
+    })),
+    totals.value.dayPct,
+  ),
+);
+const rebalanceRows = computed(() =>
+  rows.value.map((row) => ({
+    symbol: row.symbol,
+    name: row.asset.name,
+    value: row.value,
+    weight: row.weight,
+  })),
+);
+const riskRows = computed<HoldingRiskRow[]>(() =>
+  rows.value.map((row) => {
+    const base = row.quote?.previousClose ?? row.quote?.price ?? row.averageCost;
+    const amplitude =
+      row.quote?.high != null && row.quote?.low != null && base > 0
+        ? ((row.quote.high - row.quote.low) / base) * 100
+        : Math.abs(row.quote?.changePct ?? 0);
+    return {
+      symbol: row.symbol,
+      name: row.asset.name,
+      weight: row.weight,
+      changePct: row.quote?.changePct ?? 0,
+      amplitudePct: Math.max(0, amplitude),
+    };
+  }),
+);
+
+function editHoldingFromHeatmap(symbol: string) {
+  const holding = state.holdings.find((item) => item.symbol === symbol);
+  if (holding) openHoldingDialog(holding);
+}
+
 const allocation = computed(() => {
   const buckets = [
-    { key: "stock", label: "A股", fill: "#c9a86c", value: 0 },
-    { key: "etf", label: "ETF / LOF", fill: "#86a48f", value: 0 },
-    { key: "fund", label: "场外基金", fill: "#b08968", value: 0 },
+    { key: "stock", label: "A股", fill: "#f16a61", value: 0 },
+    { key: "etf", label: "ETF / LOF", fill: "#d7bd88", value: 0 },
+    { key: "fund", label: "场外基金", fill: "#74d6a3", value: 0 },
   ];
   for (const row of rows.value) {
     const key = row.asset.market === "jj" ? "fund" : row.asset.kind === "stock" ? "stock" : "etf";
@@ -75,8 +125,27 @@ const allocation = computed(() => {
     .map((item) => ({ ...item, pct: total > 0 ? (item.value / total) * 100 : 0 }));
 });
 
+const snapshotLabel = computed(() =>
+  rows.value.length ? quoteFreshnessLabel(rows.value[0]?.quote) : "等待持仓",
+);
+
 const pendingDelete = ref<string | null>(null);
 let deleteTimer: number | undefined;
+const valuesHidden = computed(() => state.settings.hidePositionValues);
+
+function positionMoney(value: number, digits = 2) {
+  return valuesHidden.value ? "••••" : `¥${formatMoney(value, digits)}`;
+}
+
+function positionSigned(value: number) {
+  return valuesHidden.value ? "••••" : formatSigned(value);
+}
+
+function positionQuantity(value: number) {
+  return valuesHidden.value
+    ? "••••"
+    : value.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+}
 
 function requestDelete(id: string) {
   window.clearTimeout(deleteTimer);
@@ -95,7 +164,7 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
 </script>
 
 <template>
-  <section>
+  <section class="view-page view-holdings">
     <div class="view-head">
       <div>
         <p class="eyebrow">Portfolio</p>
@@ -108,71 +177,105 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
           <span>仅保存在本机</span>
         </p>
       </div>
-      <div class="view-actions">
-        <button class="btn btn-primary" type="button" @click="openHoldingDialog()">
-          <Plus :size="14" />
-          添加持仓
-        </button>
-      </div>
     </div>
 
-    <div class="panel portfolio-hero">
-      <div class="hero-main">
-        <p class="eyebrow">持仓市值</p>
-        <strong class="hero-value">
-          <small>¥</small>
-          {{ formatMoney(totals.value) }}
-        </strong>
-        <div class="hero-deltas">
-          <div class="hero-delta">
+    <div class="panel workspace-signal holdings-signal" :class="{ 'has-positions': rows.length }">
+      <div class="workspace-signal-meta">
+        <span>{{ rows.length }} 笔持仓 · 按最新行情估算</span>
+        <span class="workspace-signal-status">
+          <i aria-hidden="true" />
+          {{ snapshotLabel }}{{ rows.length ? ` · ${portfolioPulse.mood}` : "" }}
+        </span>
+      </div>
+
+      <div class="workspace-signal-board">
+        <div class="workspace-signal-core">
+          <div class="workspace-signal-core-head">
             <span>今日盈亏</span>
-            <strong :class="toneOf(totals.dayPnl)">
-              {{ formatSigned(totals.dayPnl) }}
-              <template v-if="rows.length">
-                （{{ formatPercent(totals.dayPct) }}
-                <i class="trend-mark" aria-hidden="true">{{ directionMark(totals.dayPct) }}</i>）
-              </template>
-            </strong>
+            <small>收盘估值</small>
           </div>
-          <div class="hero-delta">
+          <strong :aria-label="valuesHidden ? '今日盈亏金额已隐藏' : undefined">{{ positionSigned(totals.dayPnl) }}</strong>
+          <div class="workspace-signal-core-foot">
+            <span>市值 {{ positionMoney(totals.value) }}</span>
+            <span v-if="rows.length" :class="toneOf(totals.dayPct)">
+              {{ formatPercent(totals.dayPct) }}
+              <i class="trend-mark" aria-hidden="true">{{ directionMark(totals.dayPct) }}</i>
+            </span>
+            <span v-else>添加成本后开始计算</span>
+          </div>
+        </div>
+
+        <div class="workspace-signal-side">
+          <div class="workspace-signal-mini">
             <span>累计盈亏</span>
-            <strong :class="toneOf(totals.pnl)">
-              {{ formatSigned(totals.pnl) }}
-              <template v-if="rows.length">
-                （{{ formatPercent(totals.pnlPct) }}
-                <i class="trend-mark" aria-hidden="true">{{ directionMark(totals.pnlPct) }}</i>）
-              </template>
-            </strong>
+            <strong
+              :class="valuesHidden ? undefined : toneOf(totals.pnl)"
+              :aria-label="valuesHidden ? '累计盈亏金额已隐藏' : undefined"
+            >{{ positionSigned(totals.pnl) }}</strong>
+            <small>{{ rows.length ? `${formatPercent(totals.pnlPct)} ${directionMark(totals.pnlPct)}` : "尚无持仓" }}</small>
           </div>
-          <div class="hero-delta">
+          <div class="workspace-signal-mini">
             <span>持仓成本</span>
-            <strong class="flat">¥{{ formatMoney(totals.cost) }}</strong>
+            <strong :aria-label="valuesHidden ? '持仓成本金额已隐藏' : undefined">{{ positionMoney(totals.cost) }}</strong>
+            <small>{{ rows.length ? "按份额与成本估算" : "添加第一笔持仓" }}</small>
           </div>
         </div>
       </div>
 
-      <div class="allocation">
-        <div class="allocation-head">
-          <span>资产构成</span>
-          <span>{{ allocation.length ? "按市值" : "暂无" }}</span>
+      <div class="workspace-signal-facts holdings-pulse-facts">
+        <div>
+          <span>今日脉搏</span>
+          <strong>{{ portfolioPulse.mood }}</strong>
         </div>
-        <div v-if="allocation.length" class="allocation-bar">
+        <div>
+          <span>集中度</span>
+          <strong>{{ portfolioPulse.concentration }}</strong>
+        </div>
+        <div>
+          <span>{{ portfolioPulse.contributorLabel }}</span>
+          <strong :title="portfolioPulse.contributorName">{{ portfolioPulse.contributorName }}</strong>
+        </div>
+      </div>
+
+      <div v-if="allocation.length" class="workspace-signal-allocation">
+        <div class="allocation-bar">
           <i
             v-for="item in allocation"
             :key="item.key"
             :style="{ width: `${item.pct}%`, '--fill': item.fill }"
           />
         </div>
-        <div v-if="allocation.length" class="allocation-legend">
+        <div class="allocation-legend">
           <div v-for="item in allocation" :key="item.key" class="allocation-item">
             <i :style="{ '--fill': item.fill }" />
             <span>{{ item.label }}</span>
             <strong>{{ item.pct.toFixed(1) }}%</strong>
           </div>
         </div>
-        <p v-else class="allocation-empty">添加持仓后，这里会显示股票、ETF 与场外基金的比例。</p>
       </div>
+      <p v-else class="workspace-signal-empty">添加持仓后，这里会显示股票、ETF 与场外基金的比例。</p>
+
+      <button class="workspace-signal-action" type="button" @click="openHoldingDialog()">
+        <span class="workspace-signal-action-icon" aria-hidden="true"><Plus :size="17" /></span>
+        <span>
+          <strong>{{ rows.length ? "继续添加持仓" : "添加第一笔持仓" }}</strong>
+          <small>记录份额与成本，自动跟随行情重算</small>
+        </span>
+        <span class="workspace-signal-action-cta">添加持仓</span>
+      </button>
     </div>
+
+    <RebalancePanel
+      v-if="rebalanceRows.length >= 2"
+      :rows="rebalanceRows"
+      :values-hidden="valuesHidden"
+    />
+
+    <HoldingsRiskHeatmap
+      v-if="riskRows.length"
+      :rows="riskRows"
+      @edit="editHoldingFromHeatmap"
+    />
 
     <div class="panel holdings-panel">
       <div class="holdings-toolbar">
@@ -180,10 +283,13 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
           <h2>持仓明细</h2>
           <p>{{ rows.length ? "占比按市值计算，盈亏未计手续费与分红" : "记录份额与成本，自动跟随行情重算" }}</p>
         </div>
-        <button class="btn btn-small" type="button" @click="openHoldingDialog()">
-          <Plus :size="12" />
-          添加
-        </button>
+        <div class="holdings-toolbar-actions">
+          <PositionValueToggle />
+          <button class="btn btn-small" type="button" @click="openHoldingDialog()">
+            <Plus :size="12" />
+            添加
+          </button>
+        </div>
       </div>
 
       <div v-if="!rows.length" class="empty holdings-empty">
@@ -210,7 +316,7 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
             <span>{{ row.asset.code }} · {{ row.asset.typeLabel }}</span>
           </button>
           <span class="holding-cell align-right">
-            {{ row.shares.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) }}
+            {{ positionQuantity(row.shares) }}
             <small>{{ row.asset.kind === "fund" ? "份" : "股" }}</small>
           </span>
           <span class="holding-cell align-right">
@@ -225,11 +331,11 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
             </small>
           </span>
           <span class="holding-cell align-right">
-            ¥{{ formatMoney(row.value) }}
-            <small>{{ row.quote?.state === "demo" ? "示例行情" : "最新" }}</small>
+            {{ positionMoney(row.value) }}
+            <small>{{ quoteFreshnessLabel(row.quote) }}</small>
           </span>
-          <span class="holding-cell align-right" :class="toneOf(row.pnl)">
-            {{ formatSigned(row.pnl) }}
+          <span class="holding-cell align-right" :class="valuesHidden ? undefined : toneOf(row.pnl)">
+            {{ positionSigned(row.pnl) }}
             <small>
               {{ formatPercent(row.pnlPct) }}
               <i class="trend-mark" aria-hidden="true">{{ directionMark(row.pnlPct) }}</i>
@@ -263,24 +369,24 @@ onBeforeUnmount(() => window.clearTimeout(deleteTimer));
           <div class="holding-mobile-summary">
             <div class="mobile-value-block">
               <span>持仓金额</span>
-              <strong>¥{{ formatMoney(row.value) }}</strong>
+              <strong>{{ positionMoney(row.value) }}</strong>
             </div>
             <div class="mobile-pnl-block">
               <span>浮动盈亏</span>
-              <strong :class="toneOf(row.pnl)">
-                {{ formatSigned(row.pnl) }}
+              <strong :class="valuesHidden ? undefined : toneOf(row.pnl)">
+                {{ positionSigned(row.pnl) }}
                 <small>
                   {{ formatPercent(row.pnlPct) }}
                   <i class="trend-mark" aria-hidden="true">{{ directionMark(row.pnlPct) }}</i>
                 </small>
               </strong>
-              <em v-if="row.dayPnl != null" :class="toneOf(row.dayPnl)">
-                今日 {{ formatSigned(row.dayPnl) }}
+              <em v-if="row.dayPnl != null" :class="valuesHidden ? undefined : toneOf(row.dayPnl)">
+                今日 {{ positionSigned(row.dayPnl) }}
               </em>
             </div>
             <div class="mobile-holding-meta">
               <span>
-                {{ row.shares.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) }}
+                {{ positionQuantity(row.shares) }}
                 {{ row.asset.kind === "fund" ? "份" : "股" }}
               </span>
               <span>成本 {{ formatPrice(row.averageCost, row.digits) }}</span>

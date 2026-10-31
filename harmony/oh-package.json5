@@ -1,0 +1,8 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "jianding-harmony",
+  "version": "0.1.0",
+  "description": "简盯 HarmonyOS 客户端",
+  "dependencies": {},
+  "devDependencies": {}
+}

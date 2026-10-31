@@ -66,6 +66,7 @@ export function defaultTradingLedger(now = Date.now(), symbol = ""): TradingLedg
       takeProfitPct: 15,
     },
     backtest: null,
+    backtestHistory: [],
     agentDecisions: [],
     updatedAt: now,
   };
@@ -78,6 +79,37 @@ function finiteNumber(value: unknown, fallback = 0) {
 
 function validTime(value: unknown, fallback = Date.now()) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function sanitizeBacktestResult(
+  source: Partial<TradingBacktestResult> | null | undefined,
+  fallbackSymbol: string,
+  fallbackShortWindow: number,
+  fallbackLongWindow: number,
+): TradingBacktestResult | null {
+  if (!source || typeof source !== "object") return null;
+  return {
+    id: String(source.id || tradingUid("backtest")),
+    symbol: String(source.symbol || fallbackSymbol),
+    ranAt: validTime(source.ranAt),
+    shortWindow: Math.max(2, Math.round(finiteNumber(source.shortWindow, fallbackShortWindow))),
+    longWindow: Math.max(3, Math.round(finiteNumber(source.longWindow, fallbackLongWindow))),
+    initialCapital: Math.max(1, finiteNumber(source.initialCapital, TRADING_INITIAL_CAPITAL)),
+    finalEquity: Math.max(0, finiteNumber(source.finalEquity)),
+    totalReturn: finiteNumber(source.totalReturn),
+    maxDrawdown: Math.max(0, finiteNumber(source.maxDrawdown)),
+    winRate: source.winRate == null ? null : Math.max(0, finiteNumber(source.winRate)),
+    profitFactor:
+      source.profitFactor == null ? null : Math.max(0, finiteNumber(source.profitFactor)),
+    tradeCount: Math.max(0, Math.round(finiteNumber(source.tradeCount))),
+    equityCurve: Array.isArray(source.equityCurve)
+      ? source.equityCurve
+          .filter((point) => point && typeof point.label === "string")
+          .map((point) => ({ label: point.label, value: Math.max(0, finiteNumber(point.value)) }))
+          .slice(-500)
+      : [],
+    riskPassed: source.riskPassed === true,
+  };
 }
 
 export function sanitizeTradingLedger(raw: unknown, fallbackSymbol = ""): TradingLedger {
@@ -198,32 +230,15 @@ export function sanitizeTradingLedger(raw: unknown, fallbackSymbol = ""): Tradin
       stopLossPct: Math.min(50, Math.max(0.5, finiteNumber(risk.stopLossPct, 6))),
       takeProfitPct: Math.min(200, Math.max(1, finiteNumber(risk.takeProfitPct, 15))),
     },
-    backtest:
-      source.backtest && typeof source.backtest === "object"
-        ? {
-            id: String(source.backtest.id || tradingUid("backtest")),
-            symbol: String(source.backtest.symbol || fallbackSymbol),
-            ranAt: validTime(source.backtest.ranAt),
-            shortWindow: Math.max(2, Math.round(finiteNumber(source.backtest.shortWindow, shortWindow))),
-            longWindow: Math.max(3, Math.round(finiteNumber(source.backtest.longWindow, longWindow))),
-            initialCapital: Math.max(1, finiteNumber(source.backtest.initialCapital, TRADING_INITIAL_CAPITAL)),
-            finalEquity: Math.max(0, finiteNumber(source.backtest.finalEquity)),
-            totalReturn: finiteNumber(source.backtest.totalReturn),
-            maxDrawdown: Math.max(0, finiteNumber(source.backtest.maxDrawdown)),
-            winRate:
-              source.backtest.winRate == null ? null : Math.max(0, finiteNumber(source.backtest.winRate)),
-            profitFactor:
-              source.backtest.profitFactor == null ? null : Math.max(0, finiteNumber(source.backtest.profitFactor)),
-            tradeCount: Math.max(0, Math.round(finiteNumber(source.backtest.tradeCount))),
-            equityCurve: Array.isArray(source.backtest.equityCurve)
-              ? source.backtest.equityCurve
-                  .filter((point) => point && typeof point.label === "string")
-                  .map((point) => ({ label: point.label, value: Math.max(0, finiteNumber(point.value)) }))
-                  .slice(-500)
-              : [],
-            riskPassed: source.backtest.riskPassed === true,
-          }
-        : null,
+    backtest: sanitizeBacktestResult(source.backtest, fallbackSymbol, shortWindow, longWindow),
+    backtestHistory: Array.isArray(source.backtestHistory)
+      ? source.backtestHistory
+          .map((result) =>
+            sanitizeBacktestResult(result, fallbackSymbol, shortWindow, longWindow),
+          )
+          .filter((result): result is TradingBacktestResult => Boolean(result))
+          .slice(0, 6)
+      : [],
     agentDecisions: Array.isArray(source.agentDecisions)
       ? source.agentDecisions
           .filter((decision) => decision && typeof decision.symbol === "string")

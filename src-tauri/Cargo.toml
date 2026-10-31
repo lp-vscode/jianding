@@ -1,6 +1,6 @@
 [package]
 name = "jianding"
-version = "0.1.0"
+version = "0.1.16"
 description = "简盯 · 股票基金盯盘"
 authors = ["Lester"]
 edition = "2021"

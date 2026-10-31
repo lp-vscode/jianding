@@ -1,4 +1,12 @@
+import type { Quote } from "../types";
+
 export type MarketPhase = "盘前" | "集合竞价" | "交易中" | "午间休市" | "已收盘" | "周末休市";
+
+export interface IntradaySignal {
+  key: "surge" | "drop" | "nearHigh" | "nearLow";
+  label: string;
+  tone: "up" | "down" | "flat";
+}
 
 const SHANGHAI_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: "Asia/Shanghai",
@@ -72,4 +80,40 @@ export function marketLabel(phase: MarketPhase) {
   if (phase === "周末休市") return "周末休市";
   if (phase === "盘前") return "盘前";
   return "已收盘";
+}
+
+export function intradaySignal(quote: Quote | undefined): IntradaySignal | null {
+  if (!quote || quote.price == null || quote.symbol.startsWith("jj")) return null;
+  if (quote.changePct != null && Math.abs(quote.changePct) >= 5) {
+    return quote.changePct >= 0
+      ? { key: "surge", label: `快速上涨 ${quote.changePct.toFixed(2)}%`, tone: "up" }
+      : { key: "drop", label: `快速下跌 ${Math.abs(quote.changePct).toFixed(2)}%`, tone: "down" };
+  }
+  if (
+    quote.high != null &&
+    quote.high > 0 &&
+    quote.changePct != null &&
+    quote.changePct >= 2 &&
+    quote.price >= quote.high * 0.998
+  ) {
+    return {
+      key: "nearHigh",
+      label: `接近今日高点 ${quote.high.toFixed(2)}`,
+      tone: "up",
+    };
+  }
+  if (
+    quote.low != null &&
+    quote.low > 0 &&
+    quote.changePct != null &&
+    quote.changePct <= -2 &&
+    quote.price <= quote.low * 1.002
+  ) {
+    return {
+      key: "nearLow",
+      label: `接近今日低点 ${quote.low.toFixed(2)}`,
+      tone: "down",
+    };
+  }
+  return null;
 }

@@ -1,0 +1,56 @@
+{
+  "app": {
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compatibleSdkVersion": "6.0.0(20)",
+        "targetSdkVersion": "6.1.1(24)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ],
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "/Users/lester/.ohos/config/default_harmony_pmZOCzH83FPaLJTeFp4L_XGo2a8jStHOa_WS_fchJis=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001B9F69E5467488E5113FDDE63FF44ADE8051DA7150E8F14B8509AE613A26DBA385A0CC40D366F961",
+          "profile": "/Users/lester/.ohos/config/default_harmony_pmZOCzH83FPaLJTeFp4L_XGo2a8jStHOa_WS_fchJis=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "/Users/lester/.ohos/config/default_harmony_pmZOCzH83FPaLJTeFp4L_XGo2a8jStHOa_WS_fchJis=.p12",
+          "storePassword": "0000001B5F6AB7ED70AF750612AD1064C4B0D65BE63FA32BF13D6CD465624069BA949A4D2F8C11AFD5CB9F"
+        }
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

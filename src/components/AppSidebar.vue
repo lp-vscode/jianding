@@ -1,9 +1,17 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from "vue";
-import { BarChart3, Bell, PanelTop, Plus, Search, Settings, Star, Wallet } from "lucide-vue-next";
+import { BarChart3, Bell, PanelTop, Plus, RefreshCw, Search, Settings, Star, Wallet } from "lucide-vue-next";
 import { invoke } from "@tauri-apps/api/core";
 import type { ViewKey } from "../types";
-import { dataMode, setView, showToast, state, unreadAlertCount, watchlistAssets } from "../lib/store";
+import {
+  dataMode,
+  refreshAll,
+  setView,
+  showToast,
+  state,
+  unreadAlertCount,
+  watchlistAssets,
+} from "../lib/store";
 import { marketClock, marketPhase } from "../lib/market";
 import { isTauri } from "../lib/backend";
 
@@ -27,7 +35,8 @@ const clock = computed(() => marketClock(now.value));
 const modeText = computed(() => {
   if (dataMode.value === "live") return "实时行情";
   if (dataMode.value === "mixed") return "实时 / 净值";
-  if (dataMode.value === "demo") return "示例数据";
+  if (dataMode.value === "demo") return phase.value === "交易中" ? "示例数据" : "收盘快照";
+  if (dataMode.value === "close") return "最近收盘";
   if (dataMode.value === "cached") return "本地快照";
   return "连接中";
 });
@@ -47,6 +56,11 @@ async function openCompact() {
   } finally {
     openingCompact.value = false;
   }
+}
+
+async function refreshMarket() {
+  if (state.refreshing) return;
+  await refreshAll();
 }
 </script>
 
@@ -75,8 +89,10 @@ async function openCompact() {
         type="button"
         @click="setView(item.key)"
       >
-        <component :is="item.icon" :size="16" :stroke-width="1.8" />
-        <span>{{ item.label }}</span>
+        <span class="nav-icon" aria-hidden="true">
+          <component :is="item.icon" :size="16" :stroke-width="1.8" />
+        </span>
+        <span class="nav-label">{{ item.label }}</span>
         <span v-if="item.key === 'alerts' && unreadAlertCount" class="nav-badge">{{ unreadAlertCount }}</span>
         <span v-else-if="item.key === 'watchlist'" class="nav-count">{{ watchlistAssets.length }}</span>
       </button>
@@ -98,6 +114,18 @@ async function openCompact() {
       <PanelTop :size="14" :stroke-width="1.8" />
       <span>置顶浮窗</span>
       <kbd>{{ openingCompact ? "打开中" : "Mini" }}</kbd>
+    </button>
+
+    <button
+      class="side-action side-action-quiet"
+      type="button"
+      :disabled="state.refreshing"
+      :aria-busy="state.refreshing"
+      @click="refreshMarket"
+    >
+      <RefreshCw :size="14" :class="{ spinning: state.refreshing }" />
+      <span>{{ state.refreshing ? "刷新中" : "刷新行情" }}</span>
+      <kbd>Sync</kbd>
     </button>
 
     <div class="side-hint">

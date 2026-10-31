@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "简盯股票、ETF 与场外基金盯盘"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "简盯"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "简盯"
+    },
+    {
+      "name": "permission_internet_reason",
+      "value": "用于读取公开行情、指数和基金净值。自选、持仓与提醒保存在本机。"
+    }
+  ]
+}
